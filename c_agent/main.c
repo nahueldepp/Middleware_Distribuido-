@@ -15,7 +15,7 @@ int main(int argc, char **argv) {
     int gpu = atoi(argv[4]);
 
     ResourceManager rm;
-    resources_init(&rm);
+    resources_init(&rm, 4, 1, 8192);
     resources_add(&rm, "cpu", cpu);
     resources_add(&rm, "mem", mem);
     resources_add(&rm, "gpu", gpu);
