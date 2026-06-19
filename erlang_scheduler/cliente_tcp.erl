@@ -1,4 +1,4 @@
--module(tcp_client).
+-module(cliente_tcp).
 -export([iniciar/3, enviar_comando/2, bucle/2]).
 
 %% Inicia la conexión con el agente C local.
