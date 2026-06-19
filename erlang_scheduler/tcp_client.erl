@@ -6,16 +6,16 @@
 %% Puerto: el puerto donde escucha el Agente C local.
 %% SchedulerPid: el ID del proceso del scheduler para mandarle los mensajes.
 iniciar(Host, Puerto, SchedulerPid) ->
-    %% {packet, line}: Erlang ensambla los datos hasta encontrar \n y nos
-    %% entrega exactamente una línea por evento. Resuelve la fragmentación TCP.
+    %% {packet, line}: Erlang ensambla los datos hasta encontrar \n y nos entrega exactamente una línea por evento. Resuelve la fragmentación TCP.
     Opciones = [binary, {packet, line}, {active, true}],
 
     case gen_tcp:connect(Host, Puerto, Opciones) of
         {ok, Socket} ->
             io:format("TCP Client: Conectado al agente C en ~p:~p~n", [Host, Puerto]),
-            %% spawn_link/1: si el scheduler muere, este proceso muere también
-            %% (y viceversa), evitando procesos huérfanos.
+            %% Con la línea siguiente nos aseguramos de que si el scheduler muere, este proceso muere también (y viceversa), evitando procesos huérfanos.
             Pid = spawn_link(fun() -> bucle(Socket, SchedulerPid) end),
+            %% Al abrir un socket con gen_tcp:connect, el proceso que ejecutó esa línea se hace dueño del socket. Sin la línea siguiente, todo mensaje asincrónico iban a ir al buzón del Planificador y no al del bucle.
+            ok = gen_tcp:controlling_process(Socket, Pid),
             {ok, Pid, Socket};
         {error, Razon} ->
             io:format("TCP Client: Falló la conexión: ~p~n", [Razon]),
