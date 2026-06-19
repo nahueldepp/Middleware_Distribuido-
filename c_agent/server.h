@@ -26,5 +26,5 @@ static void manejar_lectura_cliente(int epollFd, FdInfo* info);
 
 static void cerrar_conexion(int epollFd, FdInfo* info);
 
-//static void parsear_linea()
+static void manejar_linea(int fd, const char* linea);
 #endif

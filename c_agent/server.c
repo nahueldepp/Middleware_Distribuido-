@@ -109,7 +109,7 @@ static int crear_socket_escucha(const char* ip, int port){
         exit(EXIT_FAILURE);
     }
 
-    printf("[INFO] >> Escuchando en %s:%d", ip, port);
+    printf("[INFO] >> Escuchando en %s:%d\n", ip, port);
 
     return fd;
 }
@@ -221,9 +221,49 @@ static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
 
         printf("[RECV fd=%d] %s\n", info->fd, buffer);
 
+        manejar_linea(info->fd, buffer);
+        
     }
 }
 
+static void manejar_linea(int fd, const char* linea){
+
+    char cmd[32];
+    int job_id;
+    char resource[32];
+    int cantidad;
+
+    printf("[LINE fd =%d] %s\n", fd, linea);
+    /*sscanf usa el formato %31s para leer el comando y el recurso pedido*/
+    if(sscanf(linea, "%31s %d %31s %d",cmd, &job_id, resource, &cantidad) == 4){
+        if(strncmp(cmd,"RESERVE", 7) == 0){
+            printf("[INFO]>> RESERVE job_id:<%d> resourse:<%s> amount:<%d>\n",
+            job_id, resource, cantidad);
+
+            dprintf(fd, "GRANTED %d\n", job_id);
+            return;
+        }
+
+        if(strncmp(cmd,"RELEASE", 7) == 0){
+            printf("[INFO]>> RELEASE job_id:<%d> resourse:<%s> amount:<%d>\n",
+            job_id, resource, cantidad);
+            dprintf(fd, "OK\n");
+            return;
+        }
+
+
+        
+    }
+
+    if(strncmp(linea,"PING",4) == 0){
+        dprintf(fd, "PONG\n");
+        return;
+    }
+
+    dprintf(fd, "ERROR comando_desconocido\n");
+    
+    
+}
 int main(int argc, char* argv[]){
 
     if(argc!=3){
