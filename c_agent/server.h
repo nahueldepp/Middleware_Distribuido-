@@ -24,7 +24,7 @@ static void aceptar_clientes(int epollFd, int escuhaFd);
 
 static void manejar_escritura_cliente(int epollFd, FdInfo* info);
 
-static cerrar_coneccion(int epollFd, FdInfo* info);
+static void cerrar_conexion(int epollFd, FdInfo* info);
 
 
 #endif

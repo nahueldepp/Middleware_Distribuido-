@@ -146,7 +146,7 @@ static void agregar_fd_a_epoll(int epoll_fd, int fd, FdTipo tipo){
 static void cerrar_conexion(int epoll_fd, FdInfo* info){
     printf("[INFO]>> Cerrando conexion fd= %d...\n", info->fd);
 
-    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, info->fd, EPOLLOUT );
+    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, info->fd, NULL);
     close(info->fd);
     free(info);
 }
@@ -207,13 +207,13 @@ static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
                 break;
             }
            perror("read");
-            cerrar_coneccion(epoll_fd, info);
+            cerrar_conexion(epoll_fd, info);
             return; 
         }
         
         if(n == 0){
             printf("[INFO]>> Cliente desconectado fd=%d\n", info->fd);
-            cerrar_coneccion(epoll_fd, info);
+            cerrar_conexion(epoll_fd, info);
             return;
         }
 
@@ -226,7 +226,7 @@ static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
          (including the terminating null byte ('\0')) to str.*/
         snprintf(respuesta, sizeof(respuesta), "echo: %s\n", buffer);
 
-        ssize_t escrito = write(info->fd, respuesta, sizeof(respuesta));
+        ssize_t escrito = write(info->fd, respuesta, strlen(respuesta));
 
         if(escrito == -1){
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -235,7 +235,7 @@ static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
                 printf("[AVISO]>> El socket no esta listo para la escritura fd=%d\n", info->fd);
             } else {
                 perror("write");
-                close_connection(epoll_fd, info);
+                cerrar_conexion(epoll_fd, info);
                 return;
             }
         }
@@ -267,7 +267,7 @@ int main(int argc, char* argv[]){
 
     struct epoll_event eventos[MAX_EVENTS];
 
-    print("[INFO] Escucha activa\n");
+    printf("[INFO] Escucha activa\n");
 
     while(1){
         int n = epoll_wait(epoll_fd, eventos, MAX_EVENTS, -1);
@@ -289,7 +289,7 @@ int main(int argc, char* argv[]){
                     manejar_lectura_cliente(epoll_fd, info);
                 }
                 if (eventos[i].events & (EPOLLHUP | EPOLLERR)) {
-                    cerrar_coneccion(epoll_fd, info);
+                    cerrar_conexion(epoll_fd, info);
                 }
             }
         }
