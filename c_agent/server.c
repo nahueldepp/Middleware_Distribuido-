@@ -13,8 +13,8 @@
 
 #include "server.h"
 
-#define MAX_EVENTS 64
-#define BUFFER_SIZE 1024
+
+
 
 /*Toma un file descriptor (socket) y lo setea a modo no bloqueante*/
 static int set_nobloqueante(int fd){
@@ -125,6 +125,8 @@ static void agregar_fd_a_epoll(int epoll_fd, int fd, FdTipo tipo){
 
     info->fd = fd;
     info->type = tipo; 
+    info->read_len = 0;
+
 
     struct epoll_event ev; 
     memset(&ev, 0, sizeof(ev));
@@ -195,18 +197,32 @@ static void aceptar_clientes(int epollFd, int escuhaFd){
     }
 }
 
+
+
 static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
 
-    char buffer[BUFFER_SIZE];
     
     while(1){
-        ssize_t n = read(info->fd, buffer, sizeof(buffer));
+        /*Leemos que leemos de fd lo almacenamos en info->read_buffer para guardar lineas completas en el 
+        caso que read() lea comandos lineas incompletas. Luego se parsean las lineas completas */
+
+
+        /*Como cada fd tiene asosiado un buffer de lectura chequeamos que no este lleno*/
+        if(info->read_len >= READ_BUFFER_SIZE){
+            printf("[ERROR]>> buffer de lectura de fd:<%d> lleno", info->fd);
+            cerrar_conexion(epoll_fd, info->fd);
+            return;
+        }
+        //leemos sobre read_buffer asosiado al fd a partir de donde se hizo la ultima lectura
+        ssize_t n = read(info->fd,
+                         info->read_buffer + info->read_len //almacenamos la lectura desde el ultimo espcaio en el buffer que se usó
+                         , READ_BUFFER_SIZE - info->read_len );// tamaño restante para usar en read_buffer
 
         if (n == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
             }
-           perror("read");
+            perror("read");
             cerrar_conexion(epoll_fd, info);
             return; 
         }
@@ -217,16 +233,56 @@ static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
             return;
         }
 
-        buffer[n] = '\0';
-
-        printf("[RECV fd=%d] %s\n", info->fd, buffer);
-
-        manejar_linea(info->fd, buffer);
+        //aumentamos read_len en los n espacios que se usaron para la lectura
+        info->read_len += (size_t)n;        
         
+        procesar_lineas(info);
     }
 }
 
-static void manejar_linea(int fd, const char* linea){
+static void procesar_lineas(FdInfo* info){
+    /* queremos determinar el largo de la ultima linea completa del tipo 
+    COMANDO job_id resourse amount*/
+
+    //valor en el que almacenaremos el comienzo de cada linea despues de un \n
+    size_t comienzo = 0;
+
+    for(int i = 0; i<info->read_len; i++){
+
+        //si llegamos a un \n tenemos una linea completa para parsear
+        if(info->read_buffer[i] == '\n'){
+            //largo de la linea desde el ultimo \n(sin incluir) hasta el siguiente
+            size_t largo_linea = i - comienzo + 1;
+
+            char linea[1024];
+            //si se pasa una linea demasiado larga
+            if(largo_linea >= sizeof(linea)){
+                dprintf(info->fd, "[ERROR] linea demasiado larga\n");
+                comienzo= i + 1;
+                continue;
+            }
+
+            //copiamos en el buffer linea a partir de una posición adelante del ultimo \n una cantidad largo_linea
+            memcpy(linea, info->read_buffer + comienzo, largo_linea);
+            linea[largo_linea] = '\0';
+
+            manejar_linea_comleta(info->fd, linea);
+
+            //actualizamos el comienzo en el siguiente lugar despues de un \n
+            comienzo = i + 1;
+        }
+    }
+
+    /*porcesamos las lineas hasta el ultimo \n, asi que movemos los que nos haya sobrado en read_buffer al principio de read_buffer*/
+    if(comienzo>0){
+        size_t resto_buffer = info->read_len-comienzo;
+        memmove(info->read_buffer, info->read_buffer + comienzo, resto_buffer);
+        info->read_len = resto_buffer;
+    }
+}
+/*Una vez procesadas las lineas leidas procesar_lineas(), manejar_linea_completa() se encarga
+de parsear el comando dado*/
+static void manejar_linea_comleta(int fd, const char* linea){
 
     char cmd[32];
     int job_id;
@@ -236,6 +292,7 @@ static void manejar_linea(int fd, const char* linea){
     printf("[LINE fd =%d] %s\n", fd, linea);
     /*sscanf usa el formato %31s para leer el comando y el recurso pedido*/
     if(sscanf(linea, "%31s %d %31s %d",cmd, &job_id, resource, &cantidad) == 4){
+
         if(strncmp(cmd,"RESERVE", 7) == 0){
             printf("[INFO]>> RESERVE job_id:<%d> resourse:<%s> amount:<%d>\n",
             job_id, resource, cantidad);

@@ -1,18 +1,23 @@
 #ifndef __SERVER_H__
 #define __SERVER_H__
 
-
+#include <stdio.h>
 typedef enum {
     FD_ESCUCHA_PUBLICO,
     FD_ESCUCHA_LOCAL,
     FD_CLIENTE
 }FdTipo;
 
+#define READ_BUFFER_SIZE 4096
+#define MAX_EVENTS 64
+
 typedef struct {
     int fd;
     FdTipo type;
-}FdInfo;
 
+    char read_buffer[READ_BUFFER_SIZE];
+    size_t read_len;
+} FdInfo;
 
 static int set_nobloqueante(int fd);
 
@@ -24,7 +29,10 @@ static void aceptar_clientes(int epollFd, int escuhaFd);
 
 static void manejar_lectura_cliente(int epollFd, FdInfo* info);
 
+static void manejar_linea_completa(int fd, const char* linea);
+
+static void procesar_lineas(FdInfo* info);
+
 static void cerrar_conexion(int epollFd, FdInfo* info);
 
-static void manejar_linea(int fd, const char* linea);
 #endif
