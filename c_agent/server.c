@@ -221,24 +221,6 @@ static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
 
         printf("[RECV fd=%d] %s\n", info->fd, buffer);
 
-        char respuesta[BUFFER_SIZE + 32];
-        /* The functions snprintf() and vsnprintf() write at most size bytes
-         (including the terminating null byte ('\0')) to str.*/
-        snprintf(respuesta, sizeof(respuesta), "echo: %s\n", buffer);
-
-        ssize_t escrito = write(info->fd, respuesta, strlen(respuesta));
-
-        if(escrito == -1){
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                /*EAGAIN or EWOULDBLOCK
-              The  socket is marked nonblocking and no connections are present to be accepted.*/
-                printf("[AVISO]>> El socket no esta listo para la escritura fd=%d\n", info->fd);
-            } else {
-                perror("write");
-                cerrar_conexion(epoll_fd, info);
-                return;
-            }
-        }
     }
 }
 

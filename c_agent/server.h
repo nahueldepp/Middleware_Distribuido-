@@ -22,9 +22,9 @@ static void agregar_fd_a_epoll(int epoll_fd, int fd, FdTipo tipo);
 
 static void aceptar_clientes(int epollFd, int escuhaFd);
 
-static void manejar_escritura_cliente(int epollFd, FdInfo* info);
+static void manejar_lectura_cliente(int epollFd, FdInfo* info);
 
 static void cerrar_conexion(int epollFd, FdInfo* info);
 
-
+//static void parsear_linea()
 #endif
