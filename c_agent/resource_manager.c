@@ -1,34 +1,45 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-struct job {
+struct job_pendiente {
     int id;
-    // socket
-    int resource_solicitado; // cpu = 0, gpu = 1, mem = 2
+    int socket;
+    int recurso_solicitado; // cpu = 0, gpu = 1, mem = 2
+    int cantidad;
+    struct job_pendiente * siguiente;
 };
 
-typedef struct Node {
-    int valor;
-    struct SNode * next; 
-} * SNode;
+struct job_activo {
+    int id;
+    int socket;
+    int cpu_asignado;
+    int gpu_asignado;
+    int mem_asignado;
+    struct job_activo * siguiente;
+};
 
-typedef struct res {
+struct hash_activos {
+    struct job_activo ** tabla;
+    int capacidad;
+};
+
+typedef struct recurso_t {
     int total;
     int disponible;
-    SNode primero;
-    SNode ultimo;
-} * resource;
+    struct job_pendiente * primero;
+    struct job_pendiente * ultimo;
+} * recurso;
 
 typedef struct resman {
-    resource cpu;
-    resource gpu;
-    resource mem;
+    recurso cpu;
+    recurso gpu;
+    recurso mem;
 } ResourceManager;
 
 void resources_init(ResourceManager * rm, int cant_cpu, int cant_gpu, int cant_mem){
-    rm->cpu = malloc(sizeof(struct res));
-    rm->gpu = malloc(sizeof(struct res));
-    rm->mem = malloc(sizeof(struct res));
+    rm->cpu = malloc(sizeof(struct recurso_t));
+    rm->gpu = malloc(sizeof(struct recurso_t));
+    rm->mem = malloc(sizeof(struct recurso_t));
 
     rm->cpu->total = rm->cpu->disponible = cant_cpu;
     rm->gpu->total = rm->gpu->disponible = cant_gpu;
