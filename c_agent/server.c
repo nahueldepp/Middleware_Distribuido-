@@ -11,11 +11,51 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "server.h"
+#define READ_BUFFER_SIZE 4096
+#define WRITE_BUFFER_SIZE 4096
+#define MAX_EVENTS 64
+
+typedef enum {
+    FD_ESCUCHA_PUBLICO,
+    FD_ESCUCHA_LOCAL,
+    FD_CLIENTE,
+    FD_AGENTE_REMOTO,
+    FD_AGENTE_ERLANG
+}FdTipo;
 
 
+typedef struct {
+    int fd;
+    FdTipo type;
+
+    //buffer de lectura por conexion
+    //para los bytes recibidos que todavia se estan procesando
+    char read_buffer[READ_BUFFER_SIZE];
+    size_t read_len;
+
+    //bytes que quiero mandar pero todavia no termine de escribir
+    char write_buffer[WRITE_BUFFER_SIZE];
+    //bytes totales para mandar
+    size_t write_len;
+    //bytes que se mandaron
+    size_t write_sent;
+} FdInfo;
 
 
+/*Prototipos*/
+static int set_nobloqueante(int fd);
+static int crear_socket_escucha(const char* ip, int port);
+static void agregar_fd_a_epoll(int epoll_fd, int fd, FdTipo tipo);
+static void actualizar_eventos_epoll(int epoll_fd, FdInfo* info, uint16_t events);
+static void cerrar_conexion(int epoll_fd, FdInfo* info);
+static const char* fd_tipo(FdTipo tipo);
+static void aceptar_clientes(int epollFd, int escuhaFd, FdTipo tipoCliente);
+static void manejar_linea_completa(int epoll_fd, FdInfo* info, const char* linea);
+static void procesar_lineas(int epoll_fd, FdInfo* info);
+static void manejar_lectura_cliente(int epoll_fd, FdInfo* info);
+static void enviar(int epoll_fd, FdInfo* info, const char* msg);
+static void manejar_escritura_cliente(int epoll_fd, FdInfo* info);
+/*==================================================Implementaciones ===========================================*/
 /*Toma un file descriptor (socket) y lo setea a modo no bloqueante*/
 static int set_nobloqueante(int fd){
     /*F_GETFL (void)
@@ -126,6 +166,8 @@ static void agregar_fd_a_epoll(int epoll_fd, int fd, FdTipo tipo){
     info->fd = fd;
     info->type = tipo; 
     info->read_len = 0;
+    info->write_len = 0;
+    info->write_sent = 0;
 
 
     struct epoll_event ev; 
@@ -153,7 +195,25 @@ static void cerrar_conexion(int epoll_fd, FdInfo* info){
     free(info);
 }
 
-static void aceptar_clientes(int epollFd, int escuhaFd){
+static const char* fd_tipo(FdTipo tipo){
+
+    switch(tipo){
+        case FD_AGENTE_ERLANG:
+            return "agente_erlang";
+        case FD_AGENTE_REMOTO:
+            return "agente_remoto";
+        case FD_CLIENTE:
+            return "cliente";
+        case FD_ESCUCHA_LOCAL:
+            return "puerto_escucha_local";
+        case FD_ESCUCHA_PUBLICO:
+            return "puerto_escucha_publica";
+        default:
+            return "no_registrado";
+    }
+}
+
+static void aceptar_clientes(int epollFd, int escuhaFd, FdTipo tipoCliente){
 
     while(1){
         struct sockaddr_in cliente_addr;
@@ -183,8 +243,9 @@ static void aceptar_clientes(int epollFd, int escuhaFd){
             continue;
         }
 
-        /* This function converts the network address structure src in the af address family into a character string. 
-         The resulting string is copied to the buffer pointed to by dst*/
+        /* Esta función convierte la estructura de dirección de red `src` de la familia de direcciones `af` en una cadena de caracteres.
+        La cadena resultante se copia al búfer al que apunta `dst`.
+         */
         char ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &cliente_addr.sin_addr,ip, sizeof(ip));
 
@@ -193,10 +254,9 @@ static void aceptar_clientes(int epollFd, int escuhaFd){
         ip,
         ntohs(cliente_addr.sin_port));
 
-        agregar_fd_a_epoll(epollFd, cliente_fd, FD_CLIENTE);
+        agregar_fd_a_epoll(epollFd, cliente_fd, tipoCliente);
     }
 }
-
 
 
 static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
@@ -236,11 +296,11 @@ static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
         //aumentamos read_len en los n espacios que se usaron para la lectura
         info->read_len += (size_t)n;        
         
-        procesar_lineas(info);
+        procesar_lineas(epoll_fd, info);
     }
 }
 
-static void procesar_lineas(FdInfo* info){
+static void procesar_lineas(int epoll_fd, FdInfo* info){
     /* queremos determinar el largo de la ultima linea completa del tipo 
     COMANDO job_id resourse amount*/
 
@@ -266,7 +326,7 @@ static void procesar_lineas(FdInfo* info){
             memcpy(linea, info->read_buffer + comienzo, largo_linea);
             linea[largo_linea] = '\0';
 
-            manejar_linea_completa(info->fd, linea);
+            manejar_linea_completa(epoll_fd, info, linea);
 
             //actualizamos el comienzo en el siguiente lugar despues de un \n
             comienzo = i + 1;
@@ -280,16 +340,18 @@ static void procesar_lineas(FdInfo* info){
         info->read_len = resto_buffer;
     }
 }
+
+
 /*Una vez procesadas las lineas leidas procesar_lineas(), manejar_linea_completa() se encarga
 de parsear el comando dado*/
-static void manejar_linea_completa(int fd, const char* linea){
+static void manejar_linea_completa(int epoll_fd, FdInfo* info, const char* linea){
 
     char cmd[32];
     int job_id;
     char resource[32];
     int cantidad;
 
-    printf("[LINE fd =%d] %s\n", fd, linea);
+    printf("[LINE fd:<%d> tipo:<%s>] %s\n", info->fd,fd_tipo(info->type), linea);
     /*sscanf usa el formato %31s para leer el comando y el recurso pedido*/
     if(sscanf(linea, "%31s %d %31s %d",cmd, &job_id, resource, &cantidad) == 4){
 
@@ -297,14 +359,14 @@ static void manejar_linea_completa(int fd, const char* linea){
             printf("[INFO]>> RESERVE job_id:<%d> resourse:<%s> amount:<%d>\n",
             job_id, resource, cantidad);
 
-            dprintf(fd, "GRANTED %d\n", job_id);
+            enviar(epoll_fd, info, "GRANTED\n");
             return;
         }
 
         if(strncmp(cmd,"RELEASE", 7) == 0){
             printf("[INFO]>> RELEASE job_id:<%d> resourse:<%s> amount:<%d>\n",
             job_id, resource, cantidad);
-            dprintf(fd, "OK\n");
+            enviar(epoll_fd, info, "OK\n");
             return;
         }
 
@@ -313,14 +375,77 @@ static void manejar_linea_completa(int fd, const char* linea){
     }
 
     if(strncmp(linea,"PING",4) == 0){
-        dprintf(fd, "PONG\n");
+        enviar(epoll_fd, info, "PONG\n");
         return;
     }
 
-    dprintf(fd, "ERROR comando_desconocido\n");
+    enviar(epoll_fd, info, "[ERROR]>> comando desconocido\n");
     
     
 }
+
+
+/*Enviar se encarga de encolar los mensajes para escritura*/
+static void enviar(int epoll_fd, FdInfo* info, const char* msg){
+    size_t msg_len = strlen(msg);
+
+    if(info->write_len + msg_len >= WRITE_BUFFER_SIZE){
+        printf("[ERROR]>> Buffer de lectura de fd:<%d> lleno\n", info->fd);
+        return;
+    }
+
+    //copiamos el mensaje en el espacio restante en write_buffer
+    memcpy(info->write_buffer + info->write_len, msg, msg_len);
+    info->write_len += msg_len;
+
+    //hacemos que epoll este atento a eventos EPOLLIN y EPOLLOUT en el cliente info->fd
+    actualizar_eventos_epoll(epoll_fd, info, EPOLLIN | EPOLLOUT);
+}
+
+static void manejar_escritura_cliente(int epoll_fd, FdInfo* info){
+    //mientras haya bytes para enviar
+    while(info->write_sent < info->write_len){
+        ssize_t n = write(info->fd,
+             info->write_buffer + info->write_sent,// mando desde donde quede
+             info->write_len - info->write_sent);//mando lo que falta
+
+        if( n == -1){
+            //no hay error de escritura, se espera a la proxima oportunidad 
+            if(errno == EAGAIN || errno == EWOULDBLOCK){
+                return;
+            }
+
+            perror("write");
+            cerrar_conexion(epoll_fd, info);
+            return;
+        }
+        info->write_sent += (size_t)n;
+
+    }
+
+    info->write_len = 0;
+    info->write_sent = 0;
+
+    //una vez escrito el mensaje, prestamos atención solo a los eventos de entrada
+    actualizar_eventos_epoll(epoll_fd, info, EPOLLIN);
+
+}
+
+/**/
+static void actualizar_eventos_epoll(int epoll_fd, FdInfo* info, uint16_t events){
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof(ev));
+
+    ev.events = events;
+    ev.data.ptr = info;
+
+    //se modifica el tipo de evento de un fd en el q epoll esta interesado
+    if(epoll_ctl(epoll_fd, EPOLL_CTL_MOD,info->fd ,&ev) == -1){
+        perror("epoll_ctl MOD");
+    }
+
+}
+
 int main(int argc, char* argv[]){
 
     if(argc!=3){
@@ -360,15 +485,20 @@ int main(int argc, char* argv[]){
             FdInfo* info = eventos[i].data.ptr; // info del fd
 
             //si el evento se registro algunos de los puertos de escucha sera un cliente, lo aceptamos
-            if(info->type == FD_ESCUCHA_LOCAL || info->type == FD_ESCUCHA_PUBLICO ){
-                aceptar_clientes(epoll_fd, info->fd);
+            if(info->type == FD_ESCUCHA_LOCAL ){
+                aceptar_clientes(epoll_fd, info->fd, FD_AGENTE_ERLANG);
             }
-            else if(info->type == FD_CLIENTE){
+            else if(info->type == FD_ESCUCHA_PUBLICO){
+                aceptar_clientes(epoll_fd, info->fd, FD_AGENTE_REMOTO);
+            }
+            //el evento se registro en un cliente
+            else if(info->type == FD_AGENTE_ERLANG || info->type == FD_AGENTE_REMOTO){
                 if(eventos[i].events == EPOLLIN){
                     manejar_lectura_cliente(epoll_fd, info);
                 }
-                if (eventos[i].events & (EPOLLHUP | EPOLLERR)) {
-                    cerrar_conexion(epoll_fd, info);
+                if (eventos[i].events == EPOLLOUT) {
+                    manejar_escritura_cliente(epoll_fd, info);
+                    
                 }
             }
         }
