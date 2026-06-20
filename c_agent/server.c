@@ -11,6 +11,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "server.h"
+
 #define READ_BUFFER_SIZE 4096
 #define WRITE_BUFFER_SIZE 4096
 #define MAX_EVENTS 64
@@ -358,7 +360,8 @@ static void manejar_linea_completa(int epoll_fd, FdInfo* info, const char* linea
         if(strncmp(cmd,"RESERVE", 7) == 0){
             printf("[INFO]>> RESERVE job_id:<%d> resourse:<%s> amount:<%d>\n",
             job_id, resource, cantidad);
-
+            
+            
             enviar(epoll_fd, info, "GRANTED\n");
             return;
         }
@@ -366,6 +369,7 @@ static void manejar_linea_completa(int epoll_fd, FdInfo* info, const char* linea
         if(strncmp(cmd,"RELEASE", 7) == 0){
             printf("[INFO]>> RELEASE job_id:<%d> resourse:<%s> amount:<%d>\n",
             job_id, resource, cantidad);
+            
             enviar(epoll_fd, info, "OK\n");
             return;
         }
@@ -385,7 +389,7 @@ static void manejar_linea_completa(int epoll_fd, FdInfo* info, const char* linea
 }
 
 
-/*Enviar se encarga de encolar los mensajes para escritura*/
+/*Guarda un mensaje en el buffer y activa EPOLLOUT*/
 static void enviar(int epoll_fd, FdInfo* info, const char* msg){
     size_t msg_len = strlen(msg);
 
@@ -446,18 +450,12 @@ static void actualizar_eventos_epoll(int epoll_fd, FdInfo* info, uint16_t events
 
 }
 
-int main(int argc, char* argv[]){
 
-    if(argc!=3){
-        fprintf(stderr, "Uso: %s <puerto_publico> <puerto_local>\n",argv[0]);
-        return EXIT_FAILURE;
-    }
+void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
 
-    int puerto_publico= atoi(argv[1]);
-    int puerto_local = atoi(argv[2]);
 
     int escucha_publica = crear_socket_escucha("0.0.0.0", puerto_publico);
-    int escucha_local = crear_socket_escucha("0.0.0.0", puerto_local);
+    int escucha_local = crear_socket_escucha("127.0.0.1", puerto_local);
 
     int epoll_fd = epoll_create1(0);
 
@@ -507,5 +505,19 @@ int main(int argc, char* argv[]){
     close(escucha_publica);
     close(epoll_fd);
 
+}
+
+int main(int argc, char* argv[]){
+
+    if(argc!=3){
+        fprintf(stderr, "Uso: %s <puerto_publico> <puerto_local>\n",argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    int puerto_publico= atoi(argv[1]);
+    int puerto_local = atoi(argv[2]);
+
+    server_run( puerto_publico, puerto_local, NULL);
+    
     return EXIT_SUCCESS;
 }
