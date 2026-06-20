@@ -190,28 +190,70 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
     }
     return 0;
 }
-/*
+
+void limpiar_cola(recurso r, int socket){
+    if (r == NULL || r->primero == NULL) return;
+
+    struct job_pendiente *actual = r->primero;
+    struct job_pendiente *anterior = NULL;
+
+    while (actual != NULL) {
+        if (actual->socket == socket) {
+            struct job_pendiente * a_borrar = actual;
+
+            if (anterior == NULL) {
+                r->primero = actual->siguiente;
+                actual = r->primero;
+            } else {
+                anterior->siguiente = actual->siguiente;
+                actual = actual->siguiente;
+            }
+
+            if (a_borrar == r->ultimo) {
+                r->ultimo = anterior;
+            }
+
+            free(a_borrar);
+        } else {
+            anterior = actual;
+            actual = actual->siguiente;
+        }
+    }
+}
+
 void handler_disconnect(ResourceManager * rm, int socket){
     int tam = rm->activos->capacidad;
 
     for (int i = 0; i < tam; i++){
-        struct job_activo * job = rm->activos->tabla[i];
-        if (job != NULL){
-            struct job_activo * anterior = job;
-            struct job_activo * actual = anterior->siguiente;
+        struct job_activo *actual = rm->activos->tabla[i];
+        struct job_activo *anterior = NULL;
 
-            while (actual != NULL){
-                if (actual->socket == socket){
-                    rm->cpu->disponible += actual->cpu_asignado;
-                    rm->gpu->disponible += actual->gpu_asignado;
-                    rm->mem->disponible += actual->mem_asignado;
-                    
-                    struct job_activo * a_liberar = actual;
+        while (actual != NULL){
+            if (actual->socket == socket) {
+    
+                rm->cpu->disponible += actual->cpu_asignado;
+                rm->gpu->disponible += actual->gpu_asignado;
+                rm->mem->disponible += actual->mem_asignado;
+                
+                struct job_activo *a_borrar = actual;
+                
+                if (anterior == NULL) {
+                    rm->activos->tabla[i] = actual->siguiente;
+                    actual = actual->siguiente;
+                } else {
                     anterior->siguiente = actual->siguiente;
                     actual = actual->siguiente;
-                    free(a_liberar);
                 }
+
+                free(a_borrar);
+            }
+            else {
+                anterior = actual;
+                actual = actual->siguiente;
             }
         }
     }
-}*/
+    limpiar_cola(rm->cpu, socket);
+    limpiar_cola(rm->gpu, socket);
+    limpiar_cola(rm->mem, socket);
+}
