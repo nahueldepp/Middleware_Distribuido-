@@ -210,7 +210,7 @@ static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
         /*Como cada fd tiene asosiado un buffer de lectura chequeamos que no este lleno*/
         if(info->read_len >= READ_BUFFER_SIZE){
             printf("[ERROR]>> buffer de lectura de fd:<%d> lleno", info->fd);
-            cerrar_conexion(epoll_fd, info->fd);
+            cerrar_conexion(epoll_fd, info);
             return;
         }
         //leemos sobre read_buffer asosiado al fd a partir de donde se hizo la ultima lectura
@@ -247,7 +247,7 @@ static void procesar_lineas(FdInfo* info){
     //valor en el que almacenaremos el comienzo de cada linea despues de un \n
     size_t comienzo = 0;
 
-    for(int i = 0; i<info->read_len; i++){
+    for(size_t i = 0; i<info->read_len; i++){
 
         //si llegamos a un \n tenemos una linea completa para parsear
         if(info->read_buffer[i] == '\n'){
@@ -266,7 +266,7 @@ static void procesar_lineas(FdInfo* info){
             memcpy(linea, info->read_buffer + comienzo, largo_linea);
             linea[largo_linea] = '\0';
 
-            manejar_linea_comleta(info->fd, linea);
+            manejar_linea_completa(info->fd, linea);
 
             //actualizamos el comienzo en el siguiente lugar despues de un \n
             comienzo = i + 1;
@@ -282,7 +282,7 @@ static void procesar_lineas(FdInfo* info){
 }
 /*Una vez procesadas las lineas leidas procesar_lineas(), manejar_linea_completa() se encarga
 de parsear el comando dado*/
-static void manejar_linea_comleta(int fd, const char* linea){
+static void manejar_linea_completa(int fd, const char* linea){
 
     char cmd[32];
     int job_id;
