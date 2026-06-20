@@ -1,24 +1,22 @@
 -module(scheduler).
 -export([parsear_nodos/1, iniciar/1, bucle_gerente/3, log_evento/1, armar_peticion/2]).
+-define(TIEMPO_USO_RECURSOS_MS, 5000).
 
-%% Parsea la cadena cruda que manda el agente C en respuesta a GET_NODES.
-%% Formato esperado: "IP:Puerto:cpu:N:mem:N:gpu:N;IP:Puerto:cpu:N:...;..."
-%% Devuelve una lista de tuplas {IP, Puerto, Recursos}, donde Recursos es
-%% una lista de pares {NombreRecurso, Cantidad} con Cantidad ya como entero.
+%% Función usada para parsear la cadena cruda que envía C.
+%% El formato esperado es el presentado en el enunciado del Trabajo Práctico, "IP:Puerto:cpu:(cantidad):gpu:(cantidad);IP:Puerto:..."
+%% La función devuelve una lista de tuplas de la forma {IP, Puerto, Recursos}, donde Recursos será una lista de pares de la forma {NombreRecurso, Cantidad}.
 parsear_nodos(Cadena) ->
     %% Separamos los nodos por ";"
     NodosCrudos = string:lexemes(Cadena, ";"),
 
-    %% Parseamos cada nodo individualmente a una tupla estructurada
+    %% Parseamos cada nodo individualmente a una tupla, separando al encontrar :
     [parsear_nodo(string:lexemes(Nodo, ":")) || Nodo <- NodosCrudos].
 
-%% Convierte una lista plana ["IP","Puerto","cpu","4","mem","8192","gpu","1"]
-%% en {"IP", "Puerto", [{"cpu",4},{"mem",8192},{"gpu",1}]}
+%% Convierte una lista plana ["IP","Puerto","cpu","4","mem","8192","gpu","1"] en {"IP", "Puerto", [{"cpu",4},{"mem",8192},{"gpu",1}]}
 parsear_nodo([IP, Puerto | Recursos]) ->
     {IP, Puerto, agrupar_pares(Recursos)}.
 
-%% Agrupa una lista plana de strings ["cpu","4","mem","8192",...] en pares
-%% {Recurso, Cantidad} con la cantidad ya convertida a entero.
+%% Agrupa una lista plana de strings ["cpu","4","mem","8192",...] en pares {Recurso, Cantidad} con la cantidad ya convertida a entero.
 agrupar_pares([]) ->
     [];
 agrupar_pares([Recurso, CantidadStr | Resto]) ->
@@ -28,30 +26,31 @@ agrupar_pares([Recurso, CantidadStr | Resto]) ->
 iniciar(PuertoC) ->
     io:format("Scheduler: Arrancando y buscando al agente C...~n"),
 
-    %% 1. Levantamos al Cartero
+    %% Iniciamos el cliente TCP.
     case cliente_tcp:iniciar("localhost", PuertoC, self()) of
         {ok, _PidCliente, Socket} ->
-            %% 2. Le pedimos el mapa de la red a C
+            %% Pedimos los nodos a C
             cliente_tcp:enviar_comando(Socket, "GET NODES"),
 
-            %% 3. Esperamos exclusivamente esa primera respuesta
+            %% Esperamos la respuesta inicial
             receive
                 {respuesta_c, CadenaNodos} ->
-                    %% 4. Parseamos la cadena a tuplas {IP, Puerto, Recursos}
+                    %% Parseamos la cadena a tuplas {IP, Puerto, Recursos}
                     NodosParseados = parsear_nodos(CadenaNodos),
 
-                    %% Ordena por IP (las tuplas se comparan elemento a
-                    %% elemento, así que esto ordena por el primer campo)
+                    %% Ordenamos por IP (las tuplas se comparan elemento a elemento, así que esto ordena por el primer campo)
                     NodosOrdenados = lists:sort(NodosParseados),
 
                     io:format("Scheduler: Nodos ordenados listos: ~p~n", [NodosOrdenados]),
 
-                    %% 6. Entramos al bucle infinito pasándole el mapa ya
-                    %% ordenado y una lista vacía [] que representará los
-                    %% JobsActivos.
+                    %% Iniciamos al simulador, que se encargará de representar pedidos de Jobs.
+                    %% No uso spawn_link porque no quiero que un error en el simulador tumbe al scheduler.
+                    spawn(simulador, iniciar, [self(), NodosOrdenados]),
+
+                    %% Entramos al bucle principal con el mapa ordenado y la lista de JobsActivos vacía.
                     bucle_gerente(Socket, NodosOrdenados, [])
             after 5000 ->
-                %% Un timeout por si C no nos responde los nodos rápido
+                %% Timeout por si C no nos responde los nodos rápido
                 io:format("Scheduler: El agente C no mandó los nodos a tiempo.~n")
             end;
         {error, Razon} ->
@@ -61,11 +60,12 @@ iniciar(PuertoC) ->
 bucle_gerente(Socket, NodosOrdenados, JobsActivos) ->
     receive
         %% Llega un pedido del simulador.
-        %% RecursosPedidos AHORA debe ser [{IP, Recurso, Cantidad}, ...], es decir, el simulador ya decidió a qué nodo le pide cada cosa (usando NodosOrdenados para saber qué hay disponible en la red).
+        %% RecursosPedidos debe ser [{IP, Recurso, Cantidad}, ...], es decir, el simulador ya decidió a qué nodo le pide cada cosa (usando NodosOrdenados para saber qué hay disponible en la red).
         {pedido, PidSimulador, RecursosPedidos} ->
             IdJob = erlang:unique_integer([positive]),
 
-            %% Armamos el string final, ya ordenado por IP para garantizar que todos los jobs pidan en el mismo orden global (estrategia anti-deadlock por prevención, ver §6 del TP).
+            %% Armamos el string final, ya ordenado por IP para garantizar que todos los jobs pidan en el mismo orden global.
+            %% Esa será nuestra estrategia anti deadlock.
             TextoPeticion = armar_peticion(IdJob, RecursosPedidos),
 
             %% Logueamos y mandamos a C
@@ -94,6 +94,15 @@ bucle_gerente(Socket, NodosOrdenados, JobsActivos) ->
 
                             %% Logueamos el resultado
                             log_evento(io_lib:format("RESOLUCION JOB ~p: ~s", [IdJob, Accion])),
+                            %% Si el job fue concedido, programamos su liberación automática después de un tiempo fijo.
+                            case Accion of
+                                "JOB_GRANTED" ->
+                                    erlang:send_after(
+                                        ?TIEMPO_USO_RECURSOS_MS, self(), {liberar_job, IdJob}
+                                    );
+                                _Otra ->
+                                    ok
+                            end,
 
                             %% Sacamos el job de la lista activa porque ya se resolvió
                             JobRestantes = lists:keydelete(IdJob, 2, JobsActivos),
@@ -103,12 +112,18 @@ bucle_gerente(Socket, NodosOrdenados, JobsActivos) ->
                             bucle_gerente(Socket, NodosOrdenados, JobsActivos)
                     end;
                 _Otro ->
-                    %% Mensaje con formato inesperado (menos de 2 palabras). Lo logueamos en vez de romper el bucle con un badmatch.
+                    %% Si llega un mensaje con formato inesperado (menos de 2 palabras por ejemplo), lo logueamos y avisamos que no se reconoce.
                     log_evento(
                         io_lib:format("ADVERTENCIA: mensaje no reconocido de C: ~s", [MensajeC])
                     ),
                     bucle_gerente(Socket, NodosOrdenados, JobsActivos)
             end;
+        %%Luego de que se cumpla el tiempo de uso de un job que había sido GRANTED, le mandamos JOB_RELEASE a C para que se liberen los recursos que usaba eso job.
+        {liberar_job, IdJob} ->
+            MensajeLiberacion = io_lib:format("JOB_RELEASE ~p", [IdJob]),
+            log_evento(io_lib:format("LIBERACIÓN DEL JOB ~p: tiempo de uso cumplido", [IdJob])),
+            cliente_tcp:enviar_comando(Socket, lists:flatten(MensajeLiberacion)),
+            bucle_gerente(Socket, NodosOrdenados, JobsActivos);
         %% Desconexión
         conexion_cerrada ->
             log_evento("CRITICO: Se perdió la conexión con el agente C. Apagando planificador."),
@@ -120,17 +135,8 @@ log_evento(Texto) ->
     Linea = io_lib:format("~s~n", [Texto]),
     file:write_file("scheduler.log", Linea, [append]).
 
-%% Función para construir la petición de la forma que necesitamos.
-%% RecursosPedidos: [{IP, Recurso, Cantidad}, ...] - lo que pide ESTE job
-%% específico, potencialmente a varios nodos distintos.
-%%
-%% Ordenamos por IP antes de armar el texto: esto garantiza que CUALQUIER
-%% job, sin importar qué recursos necesite, siempre pida primero al nodo
-%% de IP más baja y después al de IP más alta. Como todos los nodos de la
-%% red respetan el mismo criterio de orden, la espera circular del
-%% escenario de deadlock (§6 del TP) se vuelve imposible: ningún job puede
-%% estar esperando un recurso "anterior" en el orden mientras otro job
-%% espera uno "posterior" sobre él, porque la relación de orden es total.
+%% Función para construir la petición de la forma necesaria, o sea, de la forma [{IP, Recurso, Cantidad}, ...].
+%% Ordenamos por IP, lo que garantiza que cualquier job siempre pida primero al nodo de IP más baja y después al de IP más alta, eliminando la espera circular y previniendo un posible caso de deadlock.
 armar_peticion(IdJob, RecursosPedidos) ->
     PeticionesOrdenadas = lists:sort(
         fun({IpA, _, _}, {IpB, _, _}) -> IpA =< IpB end,
