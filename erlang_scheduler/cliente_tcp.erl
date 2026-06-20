@@ -1,12 +1,10 @@
 -module(cliente_tcp).
--export([iniciar/3, enviar_comando/2, bucle/2]).
+-export([bucle/2, enviar_comando/2]).
+-export([iniciar/3]).
 
 %% Inicia la conexión con el agente C local.
-%% Host: típicamente "localhost" o "127.0.0.1".
-%% Puerto: el puerto donde escucha el Agente C local.
-%% SchedulerPid: el ID del proceso del scheduler para mandarle los mensajes.
 iniciar(Host, Puerto, SchedulerPid) ->
-    %% {packet, line}: Erlang ensambla los datos hasta encontrar \n y nos entrega exactamente una línea por evento. Resuelve la fragmentación TCP.
+    %% {packet, line}: Erlang ensambla los datos hasta encontrar \n y entrega exactamente una línea por evento.
     Opciones = [binary, {packet, line}, {active, true}],
 
     case gen_tcp:connect(Host, Puerto, Opciones) of
@@ -32,8 +30,7 @@ enviar_comando(Socket, Comando) ->
 bucle(Socket, SchedulerPid) ->
     receive
         {tcp, Socket, Data} ->
-            %% Con {packet, line}, Data contiene exactamente una línea
-            %% (incluyendo el \n). string:trim/1 lo limpia.
+            %% Con {packet, line}, Data contiene exactamente una línea (incluyendo el \n). Debemos eliminar ese \n, y lo logramos usando string:trim.
             Cadena = binary_to_list(Data),
             MensajeLimpio = string:trim(Cadena),
             SchedulerPid ! {respuesta_c, MensajeLimpio},
