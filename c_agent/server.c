@@ -466,7 +466,7 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
 
     if(epoll_fd == -1){
         perror("epoll_create1");
-        return EXIT_FAILURE;
+        return ;
     }
 
     agregar_fd_a_epoll(epoll_fd, escucha_local, FD_ESCUCHA_LOCAL);
@@ -500,7 +500,7 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
                     manejar_lectura_cliente(&state, info);
                 }
                 if (eventos[i].events == EPOLLOUT) {
-                    manejar_escritura_cliente(&state, info);
+                    manejar_escritura_cliente(state.epoll_fd, info);
                     
                 }
             }
@@ -509,7 +509,7 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
     close(escucha_local);
     close(escucha_publica);
     close(epoll_fd);
-
+    return;
 }
 
 int main(int argc, char* argv[]){
