@@ -30,7 +30,7 @@ typedef struct recurso_t {
     struct job_pendiente * ultimo;
 } * recurso;
 
-typedef struct resman {
+typedef struct {
     recurso cpu;
     recurso gpu;
     recurso mem;
