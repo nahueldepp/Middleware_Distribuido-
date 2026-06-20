@@ -1,5 +1,7 @@
 -module(scheduler).
--export([parsear_nodos/1, iniciar/1, bucle_gerente/3, log_evento/1, armar_peticion/2]).
+-export([iniciar/1, log_evento/1, parsear_nodos/1, prioridad_recurso/1]).
+-export([armar_peticion/2]).
+-export([bucle_gerente/3]).
 -define(TIEMPO_USO_RECURSOS_MS, 5000).
 
 %% Función usada para parsear la cadena cruda que envía C.
@@ -135,11 +137,23 @@ log_evento(Texto) ->
     Linea = io_lib:format("~s~n", [Texto]),
     file:write_file("scheduler.log", Linea, [append]).
 
+%% Define la prioridad de cada recurso dentro de un mismo nodo.
+%% Esto lo hacemos porque se acordó como curso tomar primero cpu, después memoria, y después gpu.
+prioridad_recurso("cpu") -> 1;
+prioridad_recurso("mem") -> 2;
+prioridad_recurso("gpu") -> 3.
+
 %% Función para construir la petición de la forma necesaria, o sea, de la forma [{IP, Recurso, Cantidad}, ...].
 %% Ordenamos por IP, lo que garantiza que cualquier job siempre pida primero al nodo de IP más baja y después al de IP más alta, eliminando la espera circular y previniendo un posible caso de deadlock.
+%% Ordenamos por dos niveles, primero por IP y luego por recurso siguiendo la prioridad establecida.
 armar_peticion(IdJob, RecursosPedidos) ->
     PeticionesOrdenadas = lists:sort(
-        fun({IpA, _, _}, {IpB, _, _}) -> IpA =< IpB end,
+        fun({IpA, RecursoA, _}, {IpB, RecursoB, _}) ->
+            case IpA =:= IpB of
+                true -> prioridad_recurso(RecursoA) =< prioridad_recurso(RecursoB);
+                false -> IpA =< IpB
+            end
+        end,
         RecursosPedidos
     ),
 
