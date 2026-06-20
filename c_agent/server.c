@@ -52,9 +52,9 @@ static void actualizar_eventos_epoll(int epoll_fd, FdInfo* info, uint16_t events
 static void cerrar_conexion(int epoll_fd, FdInfo* info);
 static const char* fd_tipo(FdTipo tipo);
 static void aceptar_clientes(int epollFd, int escuhaFd, FdTipo tipoCliente);
-static void manejar_linea_completa(int epoll_fd, FdInfo* info, const char* linea);
-static void procesar_lineas(int epoll_fd, FdInfo* info);
-static void manejar_lectura_cliente(int epoll_fd, FdInfo* info);
+static void manejar_linea_completa(ServerState* state, FdInfo* info, const char* linea);
+static void procesar_lineas(ServerState* state, FdInfo* info);
+static void manejar_lectura_cliente(ServerState* state, FdInfo* info);
 static void enviar(int epoll_fd, FdInfo* info, const char* msg);
 static void manejar_escritura_cliente(int epoll_fd, FdInfo* info);
 /*==================================================Implementaciones ===========================================*/
@@ -261,7 +261,7 @@ static void aceptar_clientes(int epollFd, int escuhaFd, FdTipo tipoCliente){
 }
 
 
-static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
+static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
 
     
     while(1){
@@ -272,7 +272,7 @@ static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
         /*Como cada fd tiene asosiado un buffer de lectura chequeamos que no este lleno*/
         if(info->read_len >= READ_BUFFER_SIZE){
             printf("[ERROR]>> buffer de lectura de fd:<%d> lleno", info->fd);
-            cerrar_conexion(epoll_fd, info);
+            cerrar_conexion(state->epoll_fd, info);
             return;
         }
         //leemos sobre read_buffer asosiado al fd a partir de donde se hizo la ultima lectura
@@ -285,24 +285,24 @@ static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
                 break;
             }
             perror("read");
-            cerrar_conexion(epoll_fd, info);
+            cerrar_conexion(state->epoll_fd, info);
             return; 
         }
         
         if(n == 0){
             printf("[INFO]>> Cliente desconectado fd=%d\n", info->fd);
-            cerrar_conexion(epoll_fd, info);
+            cerrar_conexion(state->epoll_fd, info);
             return;
         }
 
         //aumentamos read_len en los n espacios que se usaron para la lectura
         info->read_len += (size_t)n;        
         
-        procesar_lineas(epoll_fd, info);
+        procesar_lineas(state, info);
     }
 }
 
-static void procesar_lineas(int epoll_fd, FdInfo* info){
+static void procesar_lineas(ServerState* state, FdInfo* info){
     /* queremos determinar el largo de la ultima linea completa del tipo 
     COMANDO job_id resourse amount*/
 
@@ -328,7 +328,7 @@ static void procesar_lineas(int epoll_fd, FdInfo* info){
             memcpy(linea, info->read_buffer + comienzo, largo_linea);
             linea[largo_linea] = '\0';
 
-            manejar_linea_completa(epoll_fd, info, linea);
+            manejar_linea_completa(state, info, linea);
 
             //actualizamos el comienzo en el siguiente lugar despues de un \n
             comienzo = i + 1;
@@ -346,31 +346,32 @@ static void procesar_lineas(int epoll_fd, FdInfo* info){
 
 /*Una vez procesadas las lineas leidas procesar_lineas(), manejar_linea_completa() se encarga
 de parsear el comando dado*/
-static void manejar_linea_completa(int epoll_fd, FdInfo* info, const char* linea){
+static void manejar_linea_completa(ServerState* state, FdInfo* info, const char* linea){
 
     char cmd[32];
-    int job_id;
+    char job_id[32];
     char resource[32];
-    int cantidad;
+    char cantidad[32];
 
     printf("[LINE fd:<%d> tipo:<%s>] %s\n", info->fd,fd_tipo(info->type), linea);
     /*sscanf usa el formato %31s para leer el comando y el recurso pedido*/
-    if(sscanf(linea, "%31s %d %31s %d",cmd, &job_id, resource, &cantidad) == 4){
+    if(sscanf(linea, "%31s %31s %31s %31s",cmd, job_id, resource, cantidad) == 4){
 
         if(strncmp(cmd,"RESERVE", 7) == 0){
-            printf("[INFO]>> RESERVE job_id:<%d> resourse:<%s> amount:<%d>\n",
+            printf("[INFO]>> RESERVE job_id:<%s> resourse:<%s> amount:<%s>\n",
             job_id, resource, cantidad);
             
+            //handler_reserve(state->rm,info->fd, char* string_id, char* string_recurso, char* string_cantidad)
             
-            enviar(epoll_fd, info, "GRANTED\n");
+            enviar(state->epoll_fd, info, "GRANTED\n");
             return;
         }
 
         if(strncmp(cmd,"RELEASE", 7) == 0){
-            printf("[INFO]>> RELEASE job_id:<%d> resourse:<%s> amount:<%d>\n",
+            printf("[INFO]>> RELEASE job_id:<%s> resourse:<%s> amount:<%s\n",
             job_id, resource, cantidad);
             
-            enviar(epoll_fd, info, "OK\n");
+            enviar(state->epoll_fd, info, "OK\n");
             return;
         }
 
@@ -379,11 +380,11 @@ static void manejar_linea_completa(int epoll_fd, FdInfo* info, const char* linea
     }
 
     if(strncmp(linea,"PING",4) == 0){
-        enviar(epoll_fd, info, "PONG\n");
+        enviar(state->epoll_fd, info, "PONG\n");
         return;
     }
 
-    enviar(epoll_fd, info, "[ERROR]>> comando desconocido\n");
+    enviar(state->epoll_fd, info, "[ERROR]>> comando desconocido\n");
     
     
 }
@@ -459,6 +460,10 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
 
     int epoll_fd = epoll_create1(0);
 
+    ServerState state;
+    state.epoll_fd = epoll_fd;
+    state.resource_manager = rm;
+
     if(epoll_fd == -1){
         perror("epoll_create1");
         return EXIT_FAILURE;
@@ -492,10 +497,10 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
             //el evento se registro en un cliente
             else if(info->type == FD_AGENTE_ERLANG || info->type == FD_AGENTE_REMOTO){
                 if(eventos[i].events == EPOLLIN){
-                    manejar_lectura_cliente(epoll_fd, info);
+                    manejar_lectura_cliente(&state, info);
                 }
                 if (eventos[i].events == EPOLLOUT) {
-                    manejar_escritura_cliente(epoll_fd, info);
+                    manejar_escritura_cliente(&state, info);
                     
                 }
             }
