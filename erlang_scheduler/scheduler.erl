@@ -144,8 +144,7 @@ prioridad_recurso("mem") -> 2;
 prioridad_recurso("gpu") -> 3.
 
 %% Función para construir la petición de la forma necesaria, o sea, de la forma [{IP, Recurso, Cantidad}, ...].
-%% Ordenamos por IP, lo que garantiza que cualquier job siempre pida primero al nodo de IP más baja y después al de IP más alta, eliminando la espera circular y previniendo un posible caso de deadlock.
-%% Ordenamos por dos niveles, primero por IP y luego por recurso siguiendo la prioridad establecida.
+%% Ordenamos por dos niveles: primero por IP y luego por el orden de recurso establecido (cpu -> mem -> gpu). Esto garantiza un Orden Total en toda la red y previene deadlocks.
 armar_peticion(IdJob, RecursosPedidos) ->
     PeticionesOrdenadas = lists:sort(
         fun({IpA, RecursoA, _}, {IpB, RecursoB, _}) ->
