@@ -153,7 +153,25 @@ static void cerrar_conexion(int epoll_fd, FdInfo* info){
     free(info);
 }
 
-static void aceptar_clientes(int epollFd, int escuhaFd){
+static const char* fd_tipo(FdTipo tipo){
+
+    switch(tipo){
+        case FD_AGENTE_ERLANG:
+            return "agente_erlang";
+        case FD_AGENTE_REMOTO:
+            return "agente_remoto";
+        case FD_CLIENTE:
+            return "cliente";
+        case FD_ESCUCHA_LOCAL:
+            return "puerto_escucha_local";
+        case FD_ESCUCHA_PUBLICO:
+            return "puerto_escucha_publica";
+        default:
+            return "no_registrado";
+    }
+}
+
+static void aceptar_clientes(int epollFd, int escuhaFd, FdTipo tipoCliente){
 
     while(1){
         struct sockaddr_in cliente_addr;
@@ -183,8 +201,9 @@ static void aceptar_clientes(int epollFd, int escuhaFd){
             continue;
         }
 
-        /* This function converts the network address structure src in the af address family into a character string. 
-         The resulting string is copied to the buffer pointed to by dst*/
+        /* Esta función convierte la estructura de dirección de red `src` de la familia de direcciones `af` en una cadena de caracteres.
+        La cadena resultante se copia al búfer al que apunta `dst`.
+         */
         char ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &cliente_addr.sin_addr,ip, sizeof(ip));
 
@@ -193,11 +212,9 @@ static void aceptar_clientes(int epollFd, int escuhaFd){
         ip,
         ntohs(cliente_addr.sin_port));
 
-        agregar_fd_a_epoll(epollFd, cliente_fd, FD_CLIENTE);
+        agregar_fd_a_epoll(epollFd, cliente_fd, tipoCliente);
     }
 }
-
-
 
 static void manejar_lectura_cliente(int epoll_fd, FdInfo* info){
 
@@ -266,7 +283,7 @@ static void procesar_lineas(FdInfo* info){
             memcpy(linea, info->read_buffer + comienzo, largo_linea);
             linea[largo_linea] = '\0';
 
-            manejar_linea_completa(info->fd, linea);
+            manejar_linea_completa(info, linea);
 
             //actualizamos el comienzo en el siguiente lugar despues de un \n
             comienzo = i + 1;
@@ -282,14 +299,14 @@ static void procesar_lineas(FdInfo* info){
 }
 /*Una vez procesadas las lineas leidas procesar_lineas(), manejar_linea_completa() se encarga
 de parsear el comando dado*/
-static void manejar_linea_completa(int fd, const char* linea){
+static void manejar_linea_completa(FdInfo* info, const char* linea){
 
     char cmd[32];
     int job_id;
     char resource[32];
     int cantidad;
 
-    printf("[LINE fd =%d] %s\n", fd, linea);
+    printf("[LINE fd:<%d> tipo:<%s>] %s\n", info->fd,fd_tipo(info->type), linea);
     /*sscanf usa el formato %31s para leer el comando y el recurso pedido*/
     if(sscanf(linea, "%31s %d %31s %d",cmd, &job_id, resource, &cantidad) == 4){
 
@@ -297,14 +314,14 @@ static void manejar_linea_completa(int fd, const char* linea){
             printf("[INFO]>> RESERVE job_id:<%d> resourse:<%s> amount:<%d>\n",
             job_id, resource, cantidad);
 
-            dprintf(fd, "GRANTED %d\n", job_id);
+            dprintf(info->fd, "GRANTED %d\n", job_id);
             return;
         }
 
         if(strncmp(cmd,"RELEASE", 7) == 0){
             printf("[INFO]>> RELEASE job_id:<%d> resourse:<%s> amount:<%d>\n",
             job_id, resource, cantidad);
-            dprintf(fd, "OK\n");
+            dprintf(info->fd, "OK\n");
             return;
         }
 
@@ -313,14 +330,16 @@ static void manejar_linea_completa(int fd, const char* linea){
     }
 
     if(strncmp(linea,"PING",4) == 0){
-        dprintf(fd, "PONG\n");
+        dprintf(info->fd, "PONG\n");
         return;
     }
 
-    dprintf(fd, "ERROR comando_desconocido\n");
+    dprintf(info->fd, "ERROR comando_desconocido\n");
     
     
 }
+
+
 int main(int argc, char* argv[]){
 
     if(argc!=3){
@@ -360,10 +379,14 @@ int main(int argc, char* argv[]){
             FdInfo* info = eventos[i].data.ptr; // info del fd
 
             //si el evento se registro algunos de los puertos de escucha sera un cliente, lo aceptamos
-            if(info->type == FD_ESCUCHA_LOCAL || info->type == FD_ESCUCHA_PUBLICO ){
-                aceptar_clientes(epoll_fd, info->fd);
+            if(info->type == FD_ESCUCHA_LOCAL ){
+                aceptar_clientes(epoll_fd, info->fd, FD_AGENTE_ERLANG);
             }
-            else if(info->type == FD_CLIENTE){
+            else if(info->type == FD_ESCUCHA_PUBLICO){
+                aceptar_clientes(epoll_fd, info->fd, FD_AGENTE_REMOTO);
+            }
+            //el evento se registro en un cliente
+            else if(info->type == FD_AGENTE_ERLANG || info->type == FD_AGENTE_REMOTO){
                 if(eventos[i].events == EPOLLIN){
                     manejar_lectura_cliente(epoll_fd, info);
                 }
