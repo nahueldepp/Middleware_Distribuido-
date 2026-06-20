@@ -11,14 +11,24 @@ typedef enum {
 }FdTipo;
 
 #define READ_BUFFER_SIZE 4096
+#define WRITE_BUFFER_SIZE 4096
 #define MAX_EVENTS 64
 
 typedef struct {
     int fd;
     FdTipo type;
 
+    //buffer de lectura por conexion
+    //para los bytes recibidos que todavia se estan procesando
     char read_buffer[READ_BUFFER_SIZE];
     size_t read_len;
+
+    //bytes que quiero mandar pero todavia no termine de escribir
+    char write_buffer[WRITE_BUFFER_SIZE];
+    //bytes totales para mandar
+    size_t write_len;
+    //bytes que se mandaron
+    size_t write_sent;
 } FdInfo;
 
 static int set_nobloqueante(int fd);

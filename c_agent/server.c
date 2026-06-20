@@ -297,6 +297,16 @@ static void procesar_lineas(FdInfo* info){
         info->read_len = resto_buffer;
     }
 }
+
+
+static void enviar(FdInfo* info, const char* msg){
+    ssize_t n = write(info->fd, msg, strlen(msg));
+
+    if( n == -1){
+        perror("write");
+    }
+}
+
 /*Una vez procesadas las lineas leidas procesar_lineas(), manejar_linea_completa() se encarga
 de parsear el comando dado*/
 static void manejar_linea_completa(FdInfo* info, const char* linea){
@@ -314,14 +324,14 @@ static void manejar_linea_completa(FdInfo* info, const char* linea){
             printf("[INFO]>> RESERVE job_id:<%d> resourse:<%s> amount:<%d>\n",
             job_id, resource, cantidad);
 
-            dprintf(info->fd, "GRANTED %d\n", job_id);
+            enviar(info->fd, "GRANTED\n");
             return;
         }
 
         if(strncmp(cmd,"RELEASE", 7) == 0){
             printf("[INFO]>> RELEASE job_id:<%d> resourse:<%s> amount:<%d>\n",
             job_id, resource, cantidad);
-            dprintf(info->fd, "OK\n");
+            enviar(info->fd, "OK\n");
             return;
         }
 
