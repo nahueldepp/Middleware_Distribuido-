@@ -48,9 +48,9 @@ void resources_init(ResourceManager * rm, int cant_cpu, int cant_gpu, int cant_m
 
 int handler_reserve(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad);
 
-
 int handler_release(ResourceManager * rm, int socket, char* string_id, char* string_recurso, 
                     char* string_cantidad,Notificacion* notificaciones, int* cant_notificaciones, int cant_max);
 
+void handler_disconnect(ResourceManager * rm, int socket, Notificacion* notificaciones, int* cant_notificaciones, int cant_max);
 
 #endif
