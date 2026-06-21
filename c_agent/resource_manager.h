@@ -51,6 +51,8 @@ int handler_reserve(ResourceManager * rm, int socket, char* string_id, char* str
 int handler_release(ResourceManager * rm, int socket, char* string_id, char* string_recurso, 
                     char* string_cantidad,Notificacion* notificaciones, int* cant_notificaciones, int cant_max);
 
+void remover_de_cola_pendiente_por_id(recurso r, unsigned int id);
+
 void handler_disconnect(ResourceManager * rm, int socket, Notificacion* notificaciones, int* cant_notificaciones, int cant_max);
 
 #endif

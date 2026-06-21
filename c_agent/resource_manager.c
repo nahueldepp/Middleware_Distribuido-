@@ -139,74 +139,106 @@ int handler_reserve(ResourceManager * rm, int socket, char* string_id, char* str
 int handler_release(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad, Notificacion* notificaciones, int* cant_notificaciones, int cant_max){
     unsigned int id = atoi(string_id);
     int cantidad = atoi(string_cantidad);
-    if (cantidad <= 0) {printf("Error: cantidad invalida\n"); return -1;}
     int rec = parsear_recurso(string_recurso);
+    
+    // Bandera para saber si es la liberación total del JOB_RELEASE de Erlang
+    int liberacion_total = (strcmp(string_recurso, "todo") == 0);
 
-    if (rec == -1) { printf("Error: recurso inexistente\n"); return -1; }
+    // Modificamos las validaciones: si es liberación total, ignoramos cantidad y recurso
+    if (!liberacion_total && cantidad <= 0) { printf("Error: cantidad invalida\n"); return -1; }
+    if (!liberacion_total && rec == -1) { printf("Error: recurso inexistente\n"); return -1; }
 
     unsigned int i = funcion_hash(id, socket, rm->activos->capacidad);
     struct job_activo * job = rm->activos->tabla[i];
 
     if (job == NULL) { printf("Error: JOB inexistente\n"); return -1; }
 
-    else if (job->socket == socket && job->id == id){
-        if (rec == -1){ printf("Error: recurso incorrecto\n"); return -1; }
-        else if (rec == 0){ if(job->cpu_asignado < (unsigned int)cantidad) return -1; job->cpu_asignado -= cantidad;}
-        else if (rec == 1){if(job->gpu_asignado < (unsigned int)cantidad) return -1; job->gpu_asignado -= cantidad;}
-        else if (rec == 2){if(job->mem_asignado < (unsigned int)cantidad) return -1; job->mem_asignado -= cantidad;}
+    struct job_activo * actual = NULL;
+    struct job_activo * anterior_nodo = NULL;
 
-        sumar_recurso(rm, rec, cantidad);
-        if (job->cpu_asignado == 0 && job->gpu_asignado == 0 && job->mem_asignado == 0){
-            rm->activos->tabla[i] = job->siguiente;
-            free(job);
-        }
-    }
-
-    else {
-        struct job_activo * anterior = job;
-        struct job_activo * actual = anterior->siguiente;
-
+    // Unificamos la búsqueda en la lista vinculada del cubo de la estructura hash
+    if (job->socket == socket && job->id == id) {
+        actual = job;
+    } else {
+        anterior_nodo = job;
+        actual = job->siguiente;
         while (actual != NULL && (actual->id != id || actual->socket != socket)){
-            anterior = actual;
+            anterior_nodo = actual;
             actual = actual->siguiente;
         }
+    }
 
-        if (actual == NULL) { printf("Error: JOB inexistente\n"); return -1;}
+    if (actual == NULL) { printf("Error: JOB inexistente\n"); return -1; }
 
-        if (rec == -1){ printf("Error: recurso incorrecto\n"); return -1; }
+    // Variables locales para acumular qué devolvemos al pozo general
+    unsigned int cpu_devuelto = 0;
+    unsigned int gpu_devuelto = 0;
+    unsigned int mem_devuelto = 0;
 
-        else if (rec == 0){ if(actual->cpu_asignado < (unsigned int)cantidad) return -1; actual->cpu_asignado -= cantidad;}
-        else if (rec == 1){if(actual->gpu_asignado < (unsigned int)cantidad) return -1; actual->gpu_asignado -= cantidad;}
-        else if (rec == 2){if(actual->mem_asignado < (unsigned int)cantidad) return -1; actual->mem_asignado -= cantidad;}
+    if (liberacion_total) {
+        // Guardamos todo lo asignado para sumarlo después a los disponibles
+        cpu_devuelto = actual->cpu_asignado;
+        gpu_devuelto = actual->gpu_asignado;
+        mem_devuelto = actual->mem_asignado;
 
-        //agrego suma de recurso en esta rama
+        actual->cpu_asignado = 0;
+        actual->gpu_asignado = 0;
+        actual->mem_asignado = 0;
+
+        // Sumamos físicamente a la disponibilidad del ResourceManager
+        rm->cpu->disponible += cpu_devuelto;
+        rm->gpu->disponible += gpu_devuelto;
+        rm->mem->disponible += mem_devuelto;
+    } else {
+        // Lógica clásica de tu función original para recursos individuales
+        if (rec == 0) { 
+            if(actual->cpu_asignado < (unsigned int)cantidad) return -1; 
+            actual->cpu_asignado -= cantidad;
+        }
+        else if (rec == 1) { 
+            if(actual->gpu_asignado < (unsigned int)cantidad) return -1; 
+            actual->gpu_asignado -= cantidad;
+        }
+        else if (rec == 2) { 
+            if(actual->mem_asignado < (unsigned int)cantidad) return -1; 
+            actual->mem_asignado -= cantidad;
+        }
         sumar_recurso(rm, rec, cantidad);
-        if (actual->cpu_asignado == 0 && actual->gpu_asignado == 0 && actual->mem_asignado == 0){
-            anterior->siguiente = actual->siguiente;
-            free(actual);
+    }
+
+    // Si el job se quedó sin recursos asignados, lo removemos de la estructura hash
+    if (actual->cpu_asignado == 0 && actual->gpu_asignado == 0 && actual->mem_asignado == 0) {
+        if (actual == rm->activos->tabla[i]) {
+            rm->activos->tabla[i] = actual->siguiente;
+        } else if (anterior_nodo != NULL) {
+            anterior_nodo->siguiente = actual->siguiente;
+        }
+        free(actual);
+    }
+
+    // MODIFICACIÓN CRÍTICA: Al poder liberarse todo junto, tenemos que iterar y revisar 
+    // las colas de solicitudes de los 3 recursos (0=cpu, 1=gpu, 2=mem)
+    recurso recursos_a_revisar[3] = {rm->cpu, rm->gpu, rm->mem};
+
+    for (int j = 0; j < 3; j++) {
+        recurso r = recursos_a_revisar[j];
+        while (r != NULL && r->primero != NULL && r->disponible >= r->primero->cantidad && *cant_notificaciones < cant_max) {
+            unsigned int id_pendiente = r->primero->id;
+            int socket_pendiente = r->primero->socket;
+            unsigned int cantidad_pendiente = r->primero->cantidad;
+            desencolar(r);
+
+            r->disponible -= cantidad_pendiente;
+            hash_insertar(rm->activos, id_pendiente, socket_pendiente, j, cantidad_pendiente);
+
+            notificaciones[*cant_notificaciones].socket = socket_pendiente;
+            notificaciones[*cant_notificaciones].job_id = id_pendiente;
+            notificaciones[*cant_notificaciones].recurso = j; // j representa el índice real del recurso
+            notificaciones[*cant_notificaciones].cantidad = cantidad_pendiente;
+            (*cant_notificaciones)++;
         }
     }
-
-    recurso r = NULL;
-    if (rec == 0) r = rm->cpu;
-    else if (rec == 1) r = rm->gpu;
-    else if (rec == 2) r = rm->mem;
-
-    while (r != NULL && r->primero != NULL && r->disponible >= r->primero->cantidad && *cant_notificaciones < cant_max){
-        unsigned int id_pendiente = r->primero->id;
-        int socket_pendiente = r->primero->socket;
-        unsigned int cantidad_pendiente = r->primero->cantidad;
-        desencolar(r);
-
-        r->disponible -= cantidad_pendiente;
-        hash_insertar(rm->activos, id_pendiente, socket_pendiente, rec, cantidad_pendiente);
-
-        notificaciones[*cant_notificaciones].socket = socket_pendiente;
-        notificaciones[*cant_notificaciones].job_id = id_pendiente;
-        notificaciones[*cant_notificaciones].recurso = rec;
-        notificaciones[*cant_notificaciones].cantidad = cantidad_pendiente;
-        (*cant_notificaciones)++;
-    }
+    
     return 0;
 }
 
@@ -234,6 +266,34 @@ void limpiar_cola(recurso r, int socket){
             }
 
             free(a_borrar);
+        } else {
+            anterior = actual;
+            actual = actual->siguiente;
+        }
+    }
+}
+
+void remover_de_cola_pendiente_por_id(recurso r, unsigned int id) {
+    if (r == NULL || r->primero == NULL) return;
+    
+    struct job_pendiente *anterior = NULL;
+    struct job_pendiente *actual = r->primero;
+    
+    while (actual != NULL) {
+        if (actual->id == id) {
+            struct job_pendiente *a_borrar = actual;
+            if (anterior == NULL) {
+                r->primero = actual->siguiente;
+            } else {
+                anterior->siguiente = actual->siguiente;
+            }
+            if (actual == r->ultimo) {
+                r->ultimo = anterior;
+            }
+            actual = actual->siguiente;
+            free(a_borrar);
+            printf("[INFO] Rollback: Removido Job %u de la cola de pendientes.\n", id);
+            return; 
         } else {
             anterior = actual;
             actual = actual->siguiente;
