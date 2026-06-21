@@ -2,6 +2,8 @@
 -export([iniciar/1, log_evento/1, parsear_nodos/1, prioridad_recurso/1]).
 -export([armar_peticion/2, consultar_status/2]).
 -export([bucle_gerente/4]).
+-define(ESPERA_REINTENTO_MS, 1000).
+-define(MAX_REINTENTOS_DENIED, 3).
 -define(TIEMPO_USO_RECURSOS_MS, 5000).
 
 %% Función usada para parsear la cadena cruda que envía C.
@@ -80,7 +82,7 @@ bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes) ->
             cliente_tcp:enviar_comando(Socket, TextoPeticion),
 
             %% Actualizamos la lista de trabajos activos.
-            NuevosJobsActivos = [{PidSimulador, IdJob} | JobsActivos],
+            NuevosJobsActivos = [{PidSimulador, IdJob, RecursosPedidos, 1} | JobsActivos],
             bucle_gerente(Socket, NodosOrdenados, NuevosJobsActivos, ConsultasPendientes);
         %% Caso de un JOB_STATUS. Lo anotamos en consultas pendientes antes de mandar el comando, para poder distinguirlo de un JOB_REQUEST.
         {consultar_status, IdJob} ->
@@ -104,31 +106,81 @@ bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes) ->
                         false ->
                             %% Buscamos el Pid del simulador dueño de este Job
                             case lists:keyfind(IdJob, 2, JobsActivos) of
-                                {PidSimulador, IdJob} ->
-                                    %% Le avisamos al simulador cómo le fue.
-                                    PidSimulador ! {resultado_job, Accion},
+                                {PidSimulador, IdJob, RecursosOriginales, Intentos} ->
+                                    %% Sacamos el job de la lista activa primero;
+                                    %% si corresponde reintentar, lo volvemos a
+                                    %% agregar más abajo con el contador actualizado.
+                                    JobRestantes = lists:keydelete(IdJob, 2, JobsActivos),
 
-                                    %% Logueamos el resultado
-                                    log_evento(
-                                        io_lib:format("RESOLUCION JOB ~p: ~s", [IdJob, Accion])
-                                    ),
-                                    %% Si el job fue concedido, programamos su liberación automática después de un tiempo fijo.
                                     case Accion of
                                         "JOB_GRANTED" ->
+                                            %% Caso de siempre: avisamos, logueamos,
+                                            %% programamos liberación automática.
+                                            PidSimulador ! {resultado_job, Accion},
+                                            log_evento(
+                                                io_lib:format(
+                                                    "RESOLUCION JOB ~p: ~s", [IdJob, Accion]
+                                                )
+                                            ),
                                             erlang:send_after(
                                                 ?TIEMPO_USO_RECURSOS_MS,
                                                 self(),
                                                 {liberar_job, IdJob}
+                                            ),
+                                            bucle_gerente(
+                                                Socket,
+                                                NodosOrdenados,
+                                                JobRestantes,
+                                                ConsultasPendientes
                                             );
-                                        _Otra ->
-                                            ok
-                                    end,
-
-                                    %% Sacamos el job de la lista activa porque ya se resolvió
-                                    JobRestantes = lists:keydelete(IdJob, 2, JobsActivos),
-                                    bucle_gerente(
-                                        Socket, NodosOrdenados, JobRestantes, ConsultasPendientes
-                                    );
+                                        _DeniedOTimeout when Intentos < ?MAX_REINTENTOS_DENIED ->
+                                            %% Todavía nos quedan reintentos: NO le
+                                            %% avisamos al simulador (para él, el job
+                                            %% sigue en curso) y programamos un
+                                            %% reintento del MISMO IdJob después de
+                                            %% una espera, para no chocar de nuevo
+                                            %% de inmediato contra el mismo conflicto.
+                                            log_evento(
+                                                io_lib:format(
+                                                    "REINTENTO JOB ~p (intento ~p/~p) tras ~s",
+                                                    [
+                                                        IdJob,
+                                                        Intentos + 1,
+                                                        ?MAX_REINTENTOS_DENIED,
+                                                        Accion
+                                                    ]
+                                                )
+                                            ),
+                                            erlang:send_after(
+                                                ?ESPERA_REINTENTO_MS,
+                                                self(),
+                                                {reintentar_job, IdJob, PidSimulador,
+                                                    RecursosOriginales, Intentos + 1}
+                                            ),
+                                            bucle_gerente(
+                                                Socket,
+                                                NodosOrdenados,
+                                                JobRestantes,
+                                                ConsultasPendientes
+                                            );
+                                        _DeniedOTimeoutAgotado ->
+                                            %% Se acabaron los reintentos: ahí sí le
+                                            %% avisamos al simulador que el job se
+                                            %% descartó definitivamente.
+                                            PidSimulador ! {resultado_job, Accion},
+                                            log_evento(
+                                                io_lib:format(
+                                                    "JOB ~p DESCARTADO tras ~p intentos: ~s",
+                                                    [IdJob, Intentos, Accion]
+                                                )
+                                            ),
+                                            bucle_gerente(
+                                                Socket,
+                                                NodosOrdenados,
+                                                JobRestantes,
+                                                ConsultasPendientes
+                                            )
+                                    end;
                                 false ->
                                     %% Si llega un Id que no tenemos anotado, lo ignoramos
                                     bucle_gerente(
@@ -143,6 +195,20 @@ bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes) ->
                     ),
                     bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes)
             end;
+        %% Disparamos cuando corresponde reintentar un job que recibió DENIED/TIMEOUT y todavía tiene reintentos disponibles.
+        {reintentar_job, IdJob, PidSimulador, RecursosOriginales, IntentoActual} ->
+            TextoPeticion = armar_peticion(IdJob, RecursosOriginales),
+            log_evento(
+                io_lib:format(
+                    "REINTENTANDO JOB ~p (intento ~p): ~s",
+                    [IdJob, IntentoActual, TextoPeticion]
+                )
+            ),
+            cliente_tcp:enviar_comando(Socket, TextoPeticion),
+            NuevosJobsActivos = [
+                {PidSimulador, IdJob, RecursosOriginales, IntentoActual} | JobsActivos
+            ],
+            bucle_gerente(Socket, NodosOrdenados, NuevosJobsActivos, ConsultasPendientes);
         %%Luego de que se cumpla el tiempo de uso de un job que había sido GRANTED, le mandamos JOB_RELEASE a C para que se liberen los recursos que usaba eso job.
         {liberar_job, IdJob} ->
             MensajeLiberacion = io_lib:format("JOB_RELEASE ~p", [IdJob]),
