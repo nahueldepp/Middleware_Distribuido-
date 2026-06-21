@@ -138,7 +138,8 @@ int handler_reserve(ResourceManager * rm, int socket, char* string_id, char* str
 // devuelve 0 en caso de tener exito y -1 en caso de error
 int handler_release(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad,Notificacion* notificaciones, int* cant_notificaciones, int cant_max){
     unsigned int id = atoi(string_id);
-    unsigned int cantidad = atoi(string_cantidad);
+    int cantidad = atoi(string_cantidad);
+    if (cantidad <= 0) {printf("Error: cantidad invalida\n"); return -1;}
     int rec = parsear_recurso(string_recurso);
 
     int i = funcion_hash(id, socket, rm->activos->capacidad);
@@ -148,9 +149,9 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
 
     else if (job->socket == socket && job->id == id){
         if (rec == -1){ printf("Error: recurso incorrecto\n"); return -1; }
-        else if (rec == 0){ if(job->cpu_asignado < cantidad) return -1; job->cpu_asignado -= cantidad;}
-        else if (rec == 1){if(job->gpu_asignado < cantidad) return -1; job->gpu_asignado -= cantidad;}
-        else if (rec == 2){if(job->mem_asignado < cantidad) return -1; job->mem_asignado -= cantidad;}
+        else if (rec == 0){ if(job->cpu_asignado < (unsigned int)cantidad) return -1; job->cpu_asignado -= cantidad;}
+        else if (rec == 1){if(job->gpu_asignado < (unsigned int)cantidad) return -1; job->gpu_asignado -= cantidad;}
+        else if (rec == 2){if(job->mem_asignado < (unsigned int)cantidad) return -1; job->mem_asignado -= cantidad;}
 
         sumar_recurso(rm, rec, cantidad);
         if (job->cpu_asignado == 0 && job->gpu_asignado == 0 && job->mem_asignado == 0){
@@ -171,9 +172,11 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
         if (actual == NULL) { printf("Error: JOB inexistente\n"); return -1;}
 
         if (rec == -1){ printf("Error: recurso incorrecto\n"); return -1; }
+
         else if (rec == 0){ if(actual->cpu_asignado < cantidad) return -1; actual->cpu_asignado -= cantidad;}
         else if (rec == 1){if(actual->gpu_asignado < cantidad) return -1; actual->gpu_asignado -= cantidad;}
         else if (rec == 2){if(actual->mem_asignado < cantidad) return -1; actual->mem_asignado -= cantidad;}
+
         //agrego suma de recurso en esta rama
         sumar_recurso(rm, rec, cantidad);
         if (actual->cpu_asignado == 0 && actual->gpu_asignado == 0 && actual->mem_asignado == 0){
