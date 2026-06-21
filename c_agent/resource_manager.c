@@ -4,6 +4,7 @@
 
 #include "resource_manager.h"
 
+// funcion auxiliar que dado un string, devuelve el entero correspondiente que representa el recurso o -1 en caso de error
 static int parsear_recurso(char* recurso){
     if(strcmp(recurso, "cpu") == 0) return 0;
     if(strcmp(recurso, "gpu") == 0) return 1;
@@ -11,14 +12,17 @@ static int parsear_recurso(char* recurso){
     return -1;
 }
 
+// funcion auxiliar que dada la estructura ResourceManager, un entero que representa el recurso y un entero "cantidad", suma la cantidad al recurso dentro de la estructura
 static void sumar_recurso(ResourceManager * rm, int rec, int cantidad){
     if (rec == 0) rm->cpu->disponible += cantidad;
-    else if (rec == 0) rm->gpu->disponible += cantidad;
+    else if (rec == 1) rm->gpu->disponible += cantidad;
     else  rm->mem->disponible += cantidad;
 }
 
+// funcion hash compuesta
 static unsigned int funcion_hash(unsigned int id, int socket, unsigned int capacidad) { return (id + socket) % capacidad; }
 
+// hash_init: dado un entero tamaño, reserva memoria para la tabla hash y devuelve el puntero a la tabla
 static struct hash_activos * hash_init(int t){
     struct hash_activos * tabla_hash = malloc(sizeof(struct hash_activos));
     tabla_hash->capacidad = t;
@@ -26,6 +30,7 @@ static struct hash_activos * hash_init(int t){
     return tabla_hash;
 }
 
+// resources_init: toma un puntero a ResourceManager, la cantidad total de cpu, gpu y mem y el tamaño de la tabla y reserva memoria para cada componente del ResourceManager
 void resources_init(ResourceManager * rm, int cant_cpu, int cant_gpu, int cant_mem, int tam_activos){
     rm->cpu = malloc(sizeof(struct recurso_t));
     rm->gpu = malloc(sizeof(struct recurso_t));
@@ -41,6 +46,7 @@ void resources_init(ResourceManager * rm, int cant_cpu, int cant_gpu, int cant_m
     rm->mem->primero = rm->mem->ultimo = NULL;
 }
 
+// encolar: funcion FIFO de insercion de la cola. crea un nuevo nodo y lo insterta al final de la cola
 static void encolar(recurso r, unsigned int id, int socket, unsigned int rec_solicitado, unsigned int cantidad){
     struct job_pendiente * nuevo_nodo = malloc(sizeof(struct job_pendiente));
     nuevo_nodo->id = id;
@@ -56,6 +62,7 @@ static void encolar(recurso r, unsigned int id, int socket, unsigned int rec_sol
     }
 }
 
+// desencolar: funcion FIFO de eliminacion en la cola. libera la memoria del primer nodo en la cola y pone al segundo nodo como nuevo primero
 static int desencolar(recurso r){
     if (r->primero == NULL) return -1;
     else {
@@ -67,6 +74,7 @@ static int desencolar(recurso r){
     }
 }
 
+// hash_buscar: dadas la tabla hash, el id y socket, devuelve un puntero al nodo que coincide o NULL si no existe
 static struct job_activo * hash_buscar(struct hash_activos * tabla, unsigned int id, int socket){
     unsigned int i = funcion_hash(id, socket, tabla->capacidad);
     struct job_activo * actual = tabla->tabla[i];
@@ -79,6 +87,8 @@ static struct job_activo * hash_buscar(struct hash_activos * tabla, unsigned int
     return NULL;
 }
 
+// hash_insertar: dada la tabla hash, el socket, id, recurso y cantidad, crea un nuevo nodo y lo inserta el la tabla hash
+// o suma la cantidad al recurso correspondiente en caso de que el mismo socket ya tenga un job con el mismo id ya insertado
 static void hash_insertar(struct hash_activos * tabla, int id, int socket, int tipo_recurso, int cantidad){
     struct job_activo * job = hash_buscar(tabla, id, socket);
 
@@ -97,6 +107,7 @@ static void hash_insertar(struct hash_activos * tabla, int id, int socket, int t
     else if (tipo_recurso == 2) job->mem_asignado += cantidad;
 }
 
+// handler_reserve: funcion principal encargada de manejar un reserve.
 // devuelve 1 si el trabajo fue concedido, 0 si fue encolado y -1 en caso de error
 int handler_reserve(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad){
     int id = atoi(string_id);
@@ -123,10 +134,12 @@ int handler_reserve(ResourceManager * rm, int socket, char* string_id, char* str
     }
 }
 
+// handler_release: funcion principal encargada de manejar un release. al final de la ejecucion atiende a los jobs pendientes encolados en cada recurso.
 // devuelve 0 en caso de tener exito y -1 en caso de error
 int handler_release(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad,Notificacion* notificaciones, int* cant_notificaciones, int cant_max){
     unsigned int id = atoi(string_id);
-    unsigned int cantidad = atoi(string_cantidad);
+    int cantidad = atoi(string_cantidad);
+    if (cantidad <= 0) {printf("Error: cantidad invalida\n"); return -1;}
     int rec = parsear_recurso(string_recurso);
 
     int i = funcion_hash(id, socket, rm->activos->capacidad);
@@ -136,9 +149,9 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
 
     else if (job->socket == socket && job->id == id){
         if (rec == -1){ printf("Error: recurso incorrecto\n"); return -1; }
-        else if (rec == 0){ if(job->cpu_asignado < cantidad) return -1; job->cpu_asignado -= cantidad;}
-        else if (rec == 1){if(job->gpu_asignado < cantidad) return -1; job->gpu_asignado -= cantidad;}
-        else if (rec == 2){if(job->mem_asignado < cantidad) return -1; job->mem_asignado -= cantidad;}
+        else if (rec == 0){ if(job->cpu_asignado < (unsigned int)cantidad) return -1; job->cpu_asignado -= cantidad;}
+        else if (rec == 1){if(job->gpu_asignado < (unsigned int)cantidad) return -1; job->gpu_asignado -= cantidad;}
+        else if (rec == 2){if(job->mem_asignado < (unsigned int)cantidad) return -1; job->mem_asignado -= cantidad;}
 
         sumar_recurso(rm, rec, cantidad);
         if (job->cpu_asignado == 0 && job->gpu_asignado == 0 && job->mem_asignado == 0){
@@ -159,9 +172,9 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
         if (actual == NULL) { printf("Error: JOB inexistente\n"); return -1;}
 
         if (rec == -1){ printf("Error: recurso incorrecto\n"); return -1; }
-        else if (rec == 0){ if(job->cpu_asignado < cantidad) return -1; job->cpu_asignado -= cantidad;}
-        else if (rec == 1){if(job->gpu_asignado < cantidad) return -1; job->gpu_asignado -= cantidad;}
-        else if (rec == 2){if(job->mem_asignado < cantidad) return -1; job->mem_asignado -= cantidad;}
+        else if (rec == 0){ if(actual->cpu_asignado < (unsigned int)cantidad) return -1; actual->cpu_asignado -= cantidad;}
+        else if (rec == 1){if(actual->gpu_asignado < (unsigned int)cantidad) return -1; actual->gpu_asignado -= cantidad;}
+        else if (rec == 2){if(actual->mem_asignado < (unsigned int)cantidad) return -1; actual->mem_asignado -= cantidad;}
         //agrego suma de recurso en esta rama
         sumar_recurso(rm, rec, cantidad);
         if (actual->cpu_asignado == 0 && actual->gpu_asignado == 0 && actual->mem_asignado == 0){
@@ -193,6 +206,7 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
     return 0;
 }
 
+// limpiar_cola: funcion auxiliar encargada de liberar los nodos de la cola de un recurso que coincidan con un socket.
 void limpiar_cola(recurso r, int socket){
     if (r == NULL || r->primero == NULL) return;
 
@@ -223,6 +237,8 @@ void limpiar_cola(recurso r, int socket){
     }
 }
 
+// handler_disconnect: funcion principal encargada de manejar una desconexion repentina de un cliente.
+// libera tanto los trabajos activos como los pendientes asociados a un socket.
 void handler_disconnect(ResourceManager * rm, int socket){
     int tam = rm->activos->capacidad;
 

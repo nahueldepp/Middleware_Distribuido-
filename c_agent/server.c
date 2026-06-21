@@ -14,9 +14,6 @@
 
 #include "server.h"
 
-#define READ_BUFFER_SIZE 4096
-#define WRITE_BUFFER_SIZE 4096
-#define MAX_EVENTS 64
 #define MAX_NODOS 32
 
 typedef struct {
@@ -28,24 +25,6 @@ typedef struct {
 
 NodoVecino tabla_nodos[MAX_NODOS];
 int cantidad_nodos = 0;
-
-typedef struct {
-    int fd;
-    FdTipo type;
-
-    //buffer de lectura por conexion
-    //para los bytes recibidos que todavia se estan procesando
-    char read_buffer[READ_BUFFER_SIZE];
-    size_t read_len;
-
-    //bytes que quiero mandar pero todavia no termine de escribir
-    char write_buffer[WRITE_BUFFER_SIZE];
-    //bytes totales para mandar
-    size_t write_len;
-    //bytes que se mandaron
-    size_t write_sent;
-} FdInfo;
-
 
 /*Prototipos*/
 static const char* obtener_recurso(int intRecurso);
@@ -61,7 +40,7 @@ static void procesar_lineas(ServerState* state, FdInfo* info);
 static void manejar_lectura_cliente(ServerState* state, FdInfo* info);
 void enviar(int epoll_fd, FdInfo* info, const char* msg);
 static int enviar_fd(int fd, const char *mensaje);
-static void manejar_escritura_cliente(int epoll_fd, FdInfo* info);
+static void manejar_escritura_cliente(ServerState* state, FdInfo* info);
 static int crear_socket_udp_broadcast(int puerto);
 static void enviar_anuncio_presence(int udp_fd, int puerto_publico, ResourceManager *rm);
 static void limpiar_nodos_expirados();
@@ -301,6 +280,7 @@ static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
         /*Como cada fd tiene asosiado un buffer de lectura chequeamos que no este lleno*/
         if(info->read_len >= READ_BUFFER_SIZE){
             printf("[ERROR] buffer de lectura de fd:<%d> lleno", info->fd);
+            handler_disconnect(state->rm, info->fd);
             cerrar_conexion(state->epoll_fd, info);
             return;
         }
@@ -314,12 +294,14 @@ static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
                 break;
             }
             perror("read");
+            handler_disconnect(state->rm, info->fd);
             cerrar_conexion(state->epoll_fd, info);
             return; 
         }
         
         if(n == 0){
             printf("[INFO]>> Cliente desconectado fd=%d\n", info->fd);
+            handler_disconnect(state->rm, info->fd);
             cerrar_conexion(state->epoll_fd, info);
             return;
         }
@@ -387,13 +369,14 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
     if (strncmp(linea, "GET NODES", 9) == 0) {
         limpiar_nodos_expirados();
 
-        char respuesta[4096] = "NODES\n";
+        char respuesta[4096] = "";
         char listado[3500] = "";
 
         for (int i = 0; i < cantidad_nodos; i++) {
             char nodo_str[256];
             char rec_formateados[128];
-            strncpy(rec_formateados, tabla_nodos[i].recursos, 128);
+            strncpy(rec_formateados, tabla_nodos[i].recursos, sizeof(rec_formateados) - 1);
+            rec_formateados[sizeof(rec_formateados) - 1] = '\0';
             
             // Reemplaza espacios por dos puntos para cumplir el protocolo de Erlang
             for(int k = 0; rec_formateados[k]; k++) {
@@ -513,7 +496,7 @@ void enviar(int epoll_fd, FdInfo* info, const char* msg){
     actualizar_eventos_epoll(epoll_fd, info, EPOLLIN | EPOLLOUT);
 }
 
-static void manejar_escritura_cliente(int epoll_fd, FdInfo* info){
+static void manejar_escritura_cliente(ServerState* state, FdInfo* info){
     //mientras haya bytes para enviar
     while(info->write_sent < info->write_len){
         ssize_t n = write(info->fd,
@@ -527,7 +510,8 @@ static void manejar_escritura_cliente(int epoll_fd, FdInfo* info){
             }
 
             perror("write");
-            cerrar_conexion(epoll_fd, info);
+            handler_disconnect(state->rm, info->fd);
+            cerrar_conexion(state->epoll_fd, info);
             return;
         }
         info->write_sent += (size_t)n;
@@ -538,7 +522,7 @@ static void manejar_escritura_cliente(int epoll_fd, FdInfo* info){
     info->write_sent = 0;
 
     //una vez escrito el mensaje, prestamos atención solo a los eventos de entrada
-    actualizar_eventos_epoll(epoll_fd, info, EPOLLIN);
+    actualizar_eventos_epoll(state->epoll_fd, info, EPOLLIN);
 
 }
 
@@ -597,13 +581,14 @@ static void enviar_anuncio_presence(int udp_fd, int puerto_publico, ResourceMana
 
     char mensaje[256];
     // EXTRAE LOS VALORES TOTALES REALES DEL RESOURCE MANAGER
-    snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %d cpu:%d mem:%d gpu:%d\n", 
-        puerto_publico, 
-        rm->cpu->total, 
-        rm->mem->total, 
-        rm->gpu->total);
+    snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %d cpu:%d mem:%d gpu:%d\n",
+             puerto_publico,
+             rm->cpu->disponible,
+             rm->mem->disponible,
+             rm->gpu->disponible);
 
-    sendto(udp_fd, mensaje, strlen(mensaje), 0, (struct sockaddr*)&bc_addr, sizeof(bc_addr));
+    sendto(udp_fd, mensaje, strlen(mensaje), 0,
+           (struct sockaddr*)&bc_addr, sizeof(bc_addr));
 }
 
 static void limpiar_nodos_expirados() {
@@ -694,7 +679,7 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
     struct epoll_event eventos[MAX_EVENTS];
 
     printf("[INFO] Lanzando anuncio inicial de presencia (espera pasiva de 2 segundos)...\n");
-    enviar_anuncio_presence(udp_fd, puerto_publico, rm); // Anuncio inmediato al arrancar 
+    enviar_anuncio_presence(udp_fd,puerto_publico,rm); // Anuncio inmediato al arrancar 
     
     time_t inicio_espera = time(NULL);
     while(difftime(time(NULL), inicio_espera) < 2.0) { // Bloque de espera activa controlada de 2s 
@@ -742,11 +727,17 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
                 }
             }
             else if(info->type == FD_AGENTE_ERLANG || info->type == FD_AGENTE_REMOTO){
-                if(eventos[i].events == EPOLLIN){
+                //events puede tener varios flags juntos, asiq que usamos &
+                if(eventos[i].events & EPOLLIN){
                     manejar_lectura_cliente(&state, info);
                 }
-                if (eventos[i].events == EPOLLOUT) {
-                    manejar_escritura_cliente(state.epoll_fd, info);
+                if (eventos[i].events & EPOLLOUT) {
+                    manejar_escritura_cliente(&state, info);
+                }
+                if (eventos[i].events & (EPOLLHUP | EPOLLERR)) {
+                    handler_disconnect(state.rm, info->fd);
+                    cerrar_conexion(state.epoll_fd, info);
+                    continue;
                 }
             }
         }
