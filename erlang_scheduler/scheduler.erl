@@ -49,7 +49,8 @@ iniciar(PuertoC) ->
 
                     %% Iniciamos al simulador, que se encargará de representar pedidos de Jobs.
                     %% No uso spawn_link porque no quiero que un error en el simulador tumbe al scheduler.
-                    spawn(simulador, iniciar, [self(), NodosOrdenados]),
+                    [{IpA, _, _}, {IpB, _, _} | _] = NodosOrdenados,
+                    spawn(simulador, forzar_deadlock, [self(), {IpA, IpB}]),
 
                     %% Entramos al bucle principal con el mapa ordenado, la lista de JobsActivos vacía y la lista de consultas de status pendientes, también vacía al principio.
                     bucle_gerente(Socket, NodosOrdenados, [], [])
@@ -94,6 +95,10 @@ bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes) ->
         %% Llega una respuesta de C (de la forma "JOB_GRANTED 1001", "JOB_DENIED 1001" o "JOB_TIMEOUT 1001")
         {respuesta_c, MensajeC} ->
             case string:lexemes(MensajeC, " ") of
+                ["[ERROR]" | _] -> 
+                    io:format("Scheduler: Alerta, el agente C respondio un error -> ~s~n", [MensajeC]),
+                    bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes);
+
                 [Accion, IdStr | _Resto] ->
                     IdJob = list_to_integer(IdStr),
                     %% Chequeamos primero si el IdJob tiene una consulta de status pendiente. La mostramos/logueamos pero no disparamos el timer de liberación ni avisamos al simulador.

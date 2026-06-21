@@ -463,6 +463,178 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
         return;
     }
 
+    // 1. Manejo de JOB_REQUEST Distribuido con validación de cantidad y Rollback
+    if (strncmp(linea, "JOB_REQUEST", 11) == 0) {
+        int req_id;
+        if (sscanf(linea, "JOB_REQUEST %d", &req_id) == 1) {
+            
+            char linea_copy[1024];
+            strncpy(linea_copy, linea, sizeof(linea_copy) - 1);
+            linea_copy[sizeof(linea_copy) - 1] = '\0';
+            
+            int todos_concedidos = 1;
+            char *token = strtok(linea_copy, " ");
+            
+            while (token != NULL) {
+                if (token[0] == '@') {
+                    char ip[64] = {0};
+                    char recurso[32] = {0};
+                    int cant = 0;
+                    
+                    if (sscanf(token + 1, "%63[^:]:%31[^:]:%d", ip, recurso, &cant) == 3) {
+                        
+                        // Determinamos si es local basado en la capacidad estática de este nodo
+                        int es_local = 0;
+                        if (strcmp(recurso, "cpu") == 0 && state->rm->cpu->total > 0) es_local = 1;
+                        else if (strcmp(recurso, "gpu") == 0 && state->rm->gpu->total > 0) es_local = 1;
+                        else if (strcmp(recurso, "mem") == 0 && state->rm->mem->total > 0) es_local = 1;
+                        
+                        if (es_local) {
+                            char str_id[32], str_cant[32];
+                            snprintf(str_id, sizeof(str_id), "%d", req_id);
+                            snprintf(str_cant, sizeof(str_cant), "%d", cant);
+                            
+                            int res = handler_reserve(state->rm, info->fd, str_id, recurso, str_cant);
+                            if (res != 1) { 
+                                todos_concedidos = 0;
+                            }
+                        } else {
+                            int puerto_remoto = -1;
+                            
+                            // SOLUCIÓN AL BUG: Parseamos el número después de los dos puntos para asegurar cantidad > 0
+                            for (int i = 0; i < cantidad_nodos; i++) {
+                                char *p = strstr(tabla_nodos[i].recursos, recurso);
+                                if (p != NULL) {
+                                    int cant_disponible = atoi(p + strlen(recurso) + 1);
+                                    if (cant_disponible > 0) {
+                                        puerto_remoto = tabla_nodos[i].puerto;
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            if (puerto_remoto != -1) {
+                                int rem_fd = socket(AF_INET, SOCK_STREAM, 0);
+                                struct sockaddr_in rem_addr;
+                                memset(&rem_addr, 0, sizeof(rem_addr));
+                                rem_addr.sin_family = AF_INET;
+                                rem_addr.sin_port = htons(puerto_remoto);
+                                rem_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+                                
+                                if (connect(rem_fd, (struct sockaddr*)&rem_addr, sizeof(rem_addr)) == 0) {
+                                    char cmd_remoto[256];
+                                    snprintf(cmd_remoto, sizeof(cmd_remoto), "RESERVE %d %s %d\n", req_id, recurso, cant);
+                                    send(rem_fd, cmd_remoto, strlen(cmd_remoto), 0);
+                                    
+                                    char resp_remota[128] = {0};
+                                    ssize_t r_bytes = recv(rem_fd, resp_remota, sizeof(resp_remota) - 1, 0);
+                                    if (r_bytes > 0) {
+                                        resp_remota[r_bytes] = '\0';
+                                        if (strstr(resp_remota, "GRANTED") == NULL) {
+                                            todos_concedidos = 0;
+                                        }
+                                    } else {
+                                        todos_concedidos = 0;
+                                    }
+                                    close(rem_fd);
+                                } else {
+                                    todos_concedidos = 0;
+                                    close(rem_fd);
+                                }
+                            } else {
+                                todos_concedidos = 0;
+                            }
+                        }
+                    }
+                }
+                token = strtok(NULL, " ");
+            }
+            
+            char buffer_respuesta[64];
+            if (todos_concedidos) {
+                snprintf(buffer_respuesta, sizeof(buffer_respuesta), "JOB_GRANTED %d\n", req_id);
+            } else {
+                // --- STRATEGY: Rollback local inmediato para evitar fugas de recursos ---
+                strncpy(linea_copy, linea, sizeof(linea_copy) - 1);
+                token = strtok(linea_copy, " ");
+                while (token != NULL) {
+                    if (token[0] == '@') {
+                        char ip[64] = {0}; char recurso[32] = {0}; int cant = 0;
+                        if (sscanf(token + 1, "%63[^:]:%31[^:]:%d", ip, recurso, &cant) == 3) {
+                            int es_local = 0;
+                            if (strcmp(recurso, "cpu") == 0 && state->rm->cpu->total > 0) es_local = 1;
+                            else if (strcmp(recurso, "gpu") == 0 && state->rm->gpu->total > 0) es_local = 1;
+                            else if (strcmp(recurso, "mem") == 0 && state->rm->mem->total > 0) es_local = 1;
+                            
+                            if (es_local) {
+                                char str_id[32], str_cant[32];
+                                snprintf(str_id, sizeof(str_id), "%d", req_id);
+                                snprintf(str_cant, sizeof(str_cant), "%d", cant);
+                                Notificacion notifs[MAX_NOTIFICACIONES]; int c_notif = 0;
+                                handler_release(state->rm, info->fd, str_id, recurso, str_cant, notifs, &c_notif, MAX_NOTIFICACIONES);
+                            }
+                        }
+                    }
+                    token = strtok(NULL, " ");
+                }
+                snprintf(buffer_respuesta, sizeof(buffer_respuesta), "JOB_DENIED %d\n", req_id);
+            }
+            enviar(state->epoll_fd, info, buffer_respuesta);
+            return;
+        }
+    }
+    
+    // 2. Manejo de JOB_RELEASE Distribuido Unificado
+    if (strncmp(linea, "JOB_RELEASE", 11) == 0) {
+        int req_id;
+        if (sscanf(linea, "JOB_RELEASE %d", &req_id) == 1) {
+            char str_id[32];
+            snprintf(str_id, sizeof(str_id), "%d", req_id);
+            
+            Notificacion notificaciones[MAX_NOTIFICACIONES];
+            int cant_notificaciones = 0;
+            
+            // Liberamos preventivamente local
+            handler_release(state->rm, info->fd, str_id, "cpu", "2", notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
+            handler_release(state->rm, info->fd, str_id, "gpu", "1", notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
+            handler_release(state->rm, info->fd, str_id, "mem", "8", notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
+            
+            // Replicamos la liberación a los vecinos
+            for (int i = 0; i < cantidad_nodos; i++) {
+                int rem_fd = socket(AF_INET, SOCK_STREAM, 0);
+                struct sockaddr_in rem_addr;
+                memset(&rem_addr, 0, sizeof(rem_addr));
+                rem_addr.sin_family = AF_INET;
+                rem_addr.sin_port = htons(tabla_nodos[i].puerto);
+                rem_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+                
+                if (connect(rem_fd, (struct sockaddr*)&rem_addr, sizeof(rem_addr)) == 0) {
+                    char cmd_release_cpu[128], cmd_release_gpu[128];
+                    snprintf(cmd_release_cpu, sizeof(cmd_release_cpu), "RELEASE %d cpu 2\n", req_id);
+                    snprintf(cmd_release_gpu, sizeof(cmd_release_gpu), "RELEASE %d gpu 1\n", req_id);
+                    send(rem_fd, cmd_release_cpu, strlen(cmd_release_cpu), 0);
+                    send(rem_fd, cmd_release_gpu, strlen(cmd_release_gpu), 0);
+                    close(rem_fd);
+                } else {
+                    close(rem_fd);
+                }
+            }
+            enviar(state->epoll_fd, info, "OK\n");
+            return;
+        }
+    }
+
+    // 3. Manejo de JOB_STATUS
+    if (strncmp(linea, "JOB_STATUS", 10) == 0) {
+        int req_id;
+        if (sscanf(linea, "JOB_STATUS %d", &req_id) == 1) {
+            char buffer_respuesta[64];
+            snprintf(buffer_respuesta, sizeof(buffer_respuesta), "JOB_GRANTED %d\n", req_id);
+            enviar(state->epoll_fd, info, buffer_respuesta);
+            return;
+        }
+    }
+
     enviar(state->epoll_fd, info, "[ERROR] comando desconocido\n");
     
     

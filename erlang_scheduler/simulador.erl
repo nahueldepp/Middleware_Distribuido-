@@ -88,7 +88,8 @@ lanzar_un_job(PidScheduler, Pedido, Etiqueta, PidPadre) ->
     end.
 
 esperar_resultados(0) ->
-    io:format("Simulador: escenario de deadlock forzado, ambos jobs resueltos sin colgarse.~n");
+    io:format("Simulador: escenario de deadlock forzado, ambos jobs resueltos sin colgarse.~n"),
+    init:stop();
 esperar_resultados(N) ->
     receive
         {fin_forzado, _Etiqueta, _Accion} ->
