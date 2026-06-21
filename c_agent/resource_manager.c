@@ -175,9 +175,9 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
 
         if (rec == -1){ printf("Error: recurso incorrecto\n"); return -1; }
 
-        else if (rec == 0){ if(actual->cpu_asignado < cantidad) return -1; actual->cpu_asignado -= cantidad;}
-        else if (rec == 1){if(actual->gpu_asignado < cantidad) return -1; actual->gpu_asignado -= cantidad;}
-        else if (rec == 2){if(actual->mem_asignado < cantidad) return -1; actual->mem_asignado -= cantidad;}
+        else if (rec == 0){ if(actual->cpu_asignado < (unsigned int)cantidad) return -1; actual->cpu_asignado -= cantidad;}
+        else if (rec == 1){if(actual->gpu_asignado < (unsigned int)cantidad) return -1; actual->gpu_asignado -= cantidad;}
+        else if (rec == 2){if(actual->mem_asignado < (unsigned int)cantidad) return -1; actual->mem_asignado -= cantidad;}
 
         //agrego suma de recurso en esta rama
         sumar_recurso(rm, rec, cantidad);

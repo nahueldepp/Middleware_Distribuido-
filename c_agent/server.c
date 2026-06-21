@@ -589,7 +589,7 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                 snprintf(buffer_respuesta, sizeof(buffer_respuesta), "JOB_GRANTED %d\n", req_id);
             } else {
                 // --- STRATEGY: Rollback local inmediato para evitar fugas de recursos ---
-                strncpy(linea_copy, linea, sizeof(linea_copy) - 1);
+                snprintf(linea_copy, sizeof(linea_copy), "%s", linea);
                 token = strtok(linea_copy, " ");
                 while (token != NULL) {
                     if (token[0] == '@') {
