@@ -19,15 +19,6 @@
 #define MAX_EVENTS 64
 #define MAX_NODOS 32
 
-typedef enum {
-    FD_ESCUCHA_PUBLICO,
-    FD_ESCUCHA_LOCAL,
-    FD_CLIENTE,
-    FD_AGENTE_REMOTO,
-    FD_AGENTE_ERLANG,
-    FD_UDP_BROADCAST
-}FdTipo;
-
 typedef struct {
     char ip[INET_ADDRSTRLEN];
     int puerto;
@@ -72,7 +63,7 @@ void enviar(int epoll_fd, FdInfo* info, const char* msg);
 static int enviar_fd(int fd, const char *mensaje);
 static void manejar_escritura_cliente(int epoll_fd, FdInfo* info);
 static int crear_socket_udp_broadcast(int puerto);
-static void enviar_anuncio_presence(int udp_fd, int puerto_publico);
+static void enviar_anuncio_presence(int udp_fd, int puerto_publico, ResourceManager *rm);
 static void limpiar_nodos_expirados();
 static void manejar_lectura_udp(int udp_fd);
 /*==================================================Implementaciones ===========================================*/
@@ -597,15 +588,20 @@ static int crear_socket_udp_broadcast(int puerto) {
     return fd;
 }
 
-static void enviar_anuncio_presence(int udp_fd, int puerto_publico) {
+static void enviar_anuncio_presence(int udp_fd, int puerto_publico, ResourceManager *rm) {
     struct sockaddr_in bc_addr;
     memset(&bc_addr, 0, sizeof(bc_addr));
     bc_addr.sin_family = AF_INET;
-    bc_addr.sin_port = htons(8888); // Puerto compartido de broadcast
+    bc_addr.sin_port = htons(8888); 
     bc_addr.sin_addr.s_addr = inet_addr("255.255.255.255");
 
     char mensaje[256];
-    snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %d cpu:4 mem:8192 gpu:1\n", puerto_publico);
+    // EXTRAE LOS VALORES TOTALES REALES DEL RESOURCE MANAGER
+    snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %d cpu:%d mem:%d gpu:%d\n", 
+        puerto_publico, 
+        rm->cpu->total, 
+        rm->mem->total, 
+        rm->gpu->total);
 
     sendto(udp_fd, mensaje, strlen(mensaje), 0, (struct sockaddr*)&bc_addr, sizeof(bc_addr));
 }
@@ -698,7 +694,7 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
     struct epoll_event eventos[MAX_EVENTS];
 
     printf("[INFO] Lanzando anuncio inicial de presencia (espera pasiva de 2 segundos)...\n");
-    enviar_anuncio_presence(udp_fd, puerto_publico); // Anuncio inmediato al arrancar 
+    enviar_anuncio_presence(udp_fd, puerto_publico, rm); // Anuncio inmediato al arrancar 
     
     time_t inicio_espera = time(NULL);
     while(difftime(time(NULL), inicio_espera) < 2.0) { // Bloque de espera activa controlada de 2s 
@@ -726,7 +722,7 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
 
         time_t ahora = time(NULL);
         if(difftime(ahora, ultimo_anuncio) >= 5.0) {
-            enviar_anuncio_presence(udp_fd, puerto_publico); // Re-anunciar presencia
+            enviar_anuncio_presence(udp_fd, puerto_publico, state.rm); // Re-anunciar presencia
             limpiar_nodos_expirados();                       // Limpieza automática tras 15s de silencio 
             ultimo_anuncio = ahora;
         }

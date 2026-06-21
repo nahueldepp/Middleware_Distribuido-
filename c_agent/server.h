@@ -13,7 +13,8 @@ typedef enum {
     FD_ESCUCHA_LOCAL,
     FD_CLIENTE,
     FD_AGENTE_REMOTO,
-    FD_AGENTE_ERLANG
+    FD_AGENTE_ERLANG,
+    FD_UDP_BROADCAST
 }FdTipo;
 
 
