@@ -32,9 +32,9 @@ typedef struct recurso_t {
 
 typedef struct {
     int socket;
-    int job_id;
-    int recurso;
-    int cantidad;
+    unsigned int job_id;
+    unsigned int recurso;
+    unsigned int cantidad;
 } Notificacion;
 
 typedef struct {
@@ -44,7 +44,7 @@ typedef struct {
     struct hash_activos * activos;
 } ResourceManager;
 
-void resources_init(ResourceManager * rm, int cant_cpu, int cant_gpu, int cant_mem, int tam_activos);
+void resources_init(ResourceManager * rm, unsigned int cant_cpu, unsigned int cant_gpu, unsigned int cant_mem, unsigned int tam_activos);
 
 int handler_reserve(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad);
 

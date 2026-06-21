@@ -13,7 +13,7 @@ static int parsear_recurso(char* recurso){
 }
 
 // funcion auxiliar que dada la estructura ResourceManager, un entero que representa el recurso y un entero "cantidad", suma la cantidad al recurso dentro de la estructura
-static void sumar_recurso(ResourceManager * rm, int rec, int cantidad){
+static void sumar_recurso(ResourceManager * rm, unsigned int rec, unsigned int cantidad){
     if (rec == 0) rm->cpu->disponible += cantidad;
     else if (rec == 1) rm->gpu->disponible += cantidad;
     else  rm->mem->disponible += cantidad;
@@ -23,7 +23,7 @@ static void sumar_recurso(ResourceManager * rm, int rec, int cantidad){
 static unsigned int funcion_hash(unsigned int id, int socket, unsigned int capacidad) { return (id + socket) % capacidad; }
 
 // hash_init: dado un entero tamaño, reserva memoria para la tabla hash y devuelve el puntero a la tabla
-static struct hash_activos * hash_init(int t){
+static struct hash_activos * hash_init(unsigned int t){
     struct hash_activos * tabla_hash = malloc(sizeof(struct hash_activos));
     tabla_hash->capacidad = t;
     tabla_hash->tabla = calloc(t, sizeof(struct job_activo *));
@@ -31,7 +31,7 @@ static struct hash_activos * hash_init(int t){
 }
 
 // resources_init: toma un puntero a ResourceManager, la cantidad total de cpu, gpu y mem y el tamaño de la tabla y reserva memoria para cada componente del ResourceManager
-void resources_init(ResourceManager * rm, int cant_cpu, int cant_gpu, int cant_mem, int tam_activos){
+void resources_init(ResourceManager * rm, unsigned int cant_cpu, unsigned int cant_gpu, unsigned int cant_mem, unsigned int tam_activos){
     rm->cpu = malloc(sizeof(struct recurso_t));
     rm->gpu = malloc(sizeof(struct recurso_t));
     rm->mem = malloc(sizeof(struct recurso_t));
@@ -89,7 +89,7 @@ static struct job_activo * hash_buscar(struct hash_activos * tabla, unsigned int
 
 // hash_insertar: dada la tabla hash, el socket, id, recurso y cantidad, crea un nuevo nodo y lo inserta el la tabla hash
 // o suma la cantidad al recurso correspondiente en caso de que el mismo socket ya tenga un job con el mismo id ya insertado
-static void hash_insertar(struct hash_activos * tabla, int id, int socket, int tipo_recurso, int cantidad){
+static void hash_insertar(struct hash_activos * tabla, unsigned int id, int socket, unsigned int tipo_recurso, unsigned int cantidad){
     struct job_activo * job = hash_buscar(tabla, id, socket);
 
     if (job == NULL){ // si el nodo no existe en la tabla, reservo memoria para el nodo y lo inicializo en 0
@@ -110,7 +110,7 @@ static void hash_insertar(struct hash_activos * tabla, int id, int socket, int t
 // handler_reserve: funcion principal encargada de manejar un reserve.
 // devuelve 1 si el trabajo fue concedido, 0 si fue encolado y -1 en caso de error
 int handler_reserve(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad){
-    int id = atoi(string_id);
+    unsigned int id = atoi(string_id);
     unsigned int cantidad = atoi(string_cantidad);
     int rec = parsear_recurso(string_recurso);
 
@@ -136,12 +136,14 @@ int handler_reserve(ResourceManager * rm, int socket, char* string_id, char* str
 
 // handler_release: funcion principal encargada de manejar un release. al final de la ejecucion atiende a los jobs pendientes encolados en cada recurso.
 // devuelve 0 en caso de tener exito y -1 en caso de error
-int handler_release(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad,Notificacion* notificaciones, int* cant_notificaciones, int cant_max){
+int handler_release(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad, Notificacion* notificaciones, int* cant_notificaciones, int cant_max){
     unsigned int id = atoi(string_id);
     unsigned int cantidad = atoi(string_cantidad);
     int rec = parsear_recurso(string_recurso);
 
-    int i = funcion_hash(id, socket, rm->activos->capacidad);
+    if (rec == -1) { printf("Error: recurso inexistente\n"); return -1; }
+
+    unsigned int i = funcion_hash(id, socket, rm->activos->capacidad);
     struct job_activo * job = rm->activos->tabla[i];
 
     if (job == NULL) { printf("Error: JOB inexistente\n"); return -1; }
@@ -188,9 +190,9 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
     else if (rec == 2) r = rm->mem;
 
     while (r != NULL && r->primero != NULL && r->disponible >= r->primero->cantidad && *cant_notificaciones < cant_max){
-        int id_pendiente = r->primero->id;
+        unsigned int id_pendiente = r->primero->id;
         int socket_pendiente = r->primero->socket;
-        int cantidad_pendiente = r->primero->cantidad;
+        unsigned int cantidad_pendiente = r->primero->cantidad;
         desencolar(r);
 
         r->disponible -= cantidad_pendiente;
@@ -239,9 +241,9 @@ void limpiar_cola(recurso r, int socket){
 // handler_disconnect: funcion principal encargada de manejar una desconexion repentina de un cliente.
 // libera tanto los trabajos activos como los pendientes asociados a un socket.
 void handler_disconnect(ResourceManager * rm, int socket, Notificacion* notificaciones, int* cant_notificaciones, int cant_max){
-    int tam = rm->activos->capacidad;
+    unsigned int tam = rm->activos->capacidad;
 
-    for (int i = 0; i < tam; i++){
+    for (unsigned int i = 0; i < tam; i++){
         struct job_activo *actual = rm->activos->tabla[i];
         struct job_activo *anterior = NULL;
 
