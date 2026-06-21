@@ -1,5 +1,5 @@
 -module(scheduler).
--export([iniciar/1, log_evento/1, parsear_nodos/1, prioridad_recurso/1]).
+-export([iniciar/1, iniciar_normal/1, log_evento/1, parsear_nodos/1, prioridad_recurso/1]).
 -export([armar_peticion/2, consultar_status/2]).
 -export([bucle_gerente/4]).
 -define(ESPERA_REINTENTO_MS, 1000).
@@ -27,7 +27,23 @@ agrupar_pares([Recurso, CantidadStr | Resto]) ->
     [{Recurso, list_to_integer(CantidadStr)} | agrupar_pares(Resto)].
 
 %% Función principal para arrancar el Scheduler
+%% Arranque en modo DEADLOCK FORZADO: si hay dos o más nodos, lanza el
+%% escenario del §6. Es el que usa test_deadlock.sh.
 iniciar(PuertoC) ->
+    arrancar(PuertoC, forzado).
+
+%% Arranque en modo CARGA NORMAL: siempre lanza el simulador en modo
+%% random (carga variada continua), sin importar cuántos nodos haya.
+%% Útil para probar el sistema "en la realidad", no solo el escenario
+%% armado de deadlock.
+iniciar_normal(PuertoC) ->
+    arrancar(PuertoC, normal).
+
+%% Función común de arranque. El parámetro Modo (forzado | normal) decide
+%% qué modo del simulador se lanza una vez conectados y descubiertos los
+%% nodos. Todo el resto (conexión, GET NODES, parseo, orden, bucle) es
+%% idéntico para ambos modos, así que se comparte acá.
+arrancar(PuertoC, Modo) ->
     io:format("Scheduler: Arrancando y buscando al agente C...~n"),
 
     %% Iniciamos el cliente TCP.
@@ -47,25 +63,7 @@ iniciar(PuertoC) ->
 
                     io:format("Scheduler: Nodos ordenados listos: ~p~n", [NodosOrdenados]),
 
-                    case NodosOrdenados of
-                        [{IpA, PuertoA, _}, {IpB, PuertoB, _} | _] ->
-                            io:format(
-                                "Scheduler: lanzando escenario de deadlock forzado entre ~s:~s y ~s:~s~n",
-                                [IpA, PuertoA, IpB, PuertoB]
-                            ),
-                            spawn(simulador, forzar_deadlock, [
-                                self(), {{IpA, PuertoA}, {IpB, PuertoB}}
-                            ]);
-                        [_UnSolo] ->
-                            io:format(
-                                "Scheduler: solo hay un nodo disponible. No se puede forzar el escenario. Arranco el modo de carga normal.~n"
-                            ),
-                            spawn(simulador, iniciar, [self(), NodosOrdenados]);
-                        [] ->
-                            io:format(
-                                "Scheduler: no hay nodos disponibles. El simulador no arranca.~n"
-                            )
-                    end,
+                    lanzar_simulador(Modo, NodosOrdenados),
 
                     %% Entramos al bucle principal con el mapa ordenado, la lista de JobsActivos vacía y la lista de consultas de status pendientes, también vacía al principio.
                     bucle_gerente(Socket, NodosOrdenados, [], [])
@@ -75,6 +73,40 @@ iniciar(PuertoC) ->
             end;
         {error, Razon} ->
             io:format("Scheduler: No me pude conectar a C: ~p~n", [Razon])
+    end.
+
+%% Decide qué modo del simulador lanzar.
+%% - En modo 'normal': siempre carga random, sin importar cuántos nodos haya.
+%% - En modo 'forzado': si hay 2+ nodos arma el escenario del §6; si hay
+%%   uno solo, cae a carga random (no se puede forzar con un nodo); si no
+%%   hay ninguno, no arranca el simulador.
+lanzar_simulador(normal, NodosOrdenados) ->
+    case NodosOrdenados of
+        [] ->
+            io:format("Scheduler: no hay nodos disponibles. El simulador no arranca.~n");
+        _ ->
+            io:format("Scheduler: arrancando simulador en modo de carga normal.~n"),
+            spawn(simulador, iniciar, [self(), NodosOrdenados])
+    end;
+lanzar_simulador(forzado, NodosOrdenados) ->
+    case NodosOrdenados of
+        [{IpA, PuertoA, _}, {IpB, PuertoB, _} | _] ->
+            io:format(
+                "Scheduler: lanzando escenario de deadlock forzado entre ~s:~s y ~s:~s~n",
+                [IpA, PuertoA, IpB, PuertoB]
+            ),
+            spawn(simulador, forzar_deadlock, [
+                self(), {{IpA, PuertoA}, {IpB, PuertoB}}
+            ]);
+        [_UnSolo] ->
+            io:format(
+                "Scheduler: solo hay un nodo disponible. No se puede forzar el escenario. Arranco el modo de carga normal.~n"
+            ),
+            spawn(simulador, iniciar, [self(), NodosOrdenados]);
+        [] ->
+            io:format(
+                "Scheduler: no hay nodos disponibles. El simulador no arranca.~n"
+            )
     end.
 
 bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes) ->
