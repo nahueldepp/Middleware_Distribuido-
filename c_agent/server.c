@@ -271,44 +271,78 @@ static void aceptar_clientes(int epollFd, int escuhaFd, FdTipo tipoCliente){
 
 static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
 
-    
     while(1){
-        /*Leemos que leemos de fd lo almacenamos en info->read_buffer para guardar lineas completas en el 
-        caso que read() lea comandos lineas incompletas. Luego se parsean las lineas completas */
+        /* Leemos lo que llega de fd y lo almacenamos en info->read_buffer */
 
-
-        /*Como cada fd tiene asosiado un buffer de lectura chequeamos que no este lleno*/
+        /* Como cada fd tiene asociado un buffer de lectura chequeamos que no este lleno */
         if(info->read_len >= READ_BUFFER_SIZE){
-            printf("[ERROR] buffer de lectura de fd:<%d> lleno", info->fd);
-            handler_disconnect(state->rm, info->fd);
+            printf("[ERROR] buffer de lectura de fd:<%d> lleno\n", info->fd);
+            
+            // NUEVO: Declaramos buffers de notificación para cumplir la nueva firma
+            Notificacion notificaciones[MAX_NOTIFICACIONES];
+            int cant_notificaciones = 0;
+            handler_disconnect(state->rm, info->fd, notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
+            
+            // Despachamos los GRANTED a los sockets que se destrabaron en la cola
+            for(int i = 0; i < cant_notificaciones; i++){
+                char respuesta[128];
+                snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
+                         notificaciones[i].job_id, 
+                         obtener_recurso(notificaciones[i].recurso),
+                         notificaciones[i].cantidad);
+                enviar_fd(notificaciones[i].socket, respuesta);
+            }
+            
             cerrar_conexion(state->epoll_fd, info);
             return;
         }
-        //leemos sobre read_buffer asosiado al fd a partir de donde se hizo la ultima lectura
+
         ssize_t n = read(info->fd,
-                         info->read_buffer + info->read_len //almacenamos la lectura desde el ultimo espcaio en el buffer que se usó
-                         , READ_BUFFER_SIZE - info->read_len );// tamaño restante para usar en read_buffer
+                         info->read_buffer + info->read_len,
+                         READ_BUFFER_SIZE - info->read_len);
 
         if (n == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 break;
             }
             perror("read");
-            handler_disconnect(state->rm, info->fd);
+            
+            // NUEVO: Manejo de notificaciones en error de lectura
+            Notificacion notificaciones[MAX_NOTIFICACIONES];
+            int cant_notificaciones = 0;
+            handler_disconnect(state->rm, info->fd, notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
+            
+            for(int i = 0; i < cant_notificaciones; i++){
+                char respuesta[128];
+                snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
+                         notificaciones[i].job_id, obtener_recurso(notificaciones[i].recurso), notificaciones[i].cantidad);
+                enviar_fd(notificaciones[i].socket, respuesta);
+            }
+            
             cerrar_conexion(state->epoll_fd, info);
             return; 
         }
         
         if(n == 0){
             printf("[INFO]>> Cliente desconectado fd=%d\n", info->fd);
-            handler_disconnect(state->rm, info->fd);
+            
+            // NUEVO: Manejo de notificaciones en desconexión limpia
+            Notificacion notificaciones[MAX_NOTIFICACIONES];
+            int cant_notificaciones = 0;
+            handler_disconnect(state->rm, info->fd, notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
+            
+            for(int i = 0; i < cant_notificaciones; i++){
+                char respuesta[128];
+                snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
+                         notificaciones[i].job_id, obtener_recurso(notificaciones[i].recurso), notificaciones[i].cantidad);
+                enviar_fd(notificaciones[i].socket, respuesta);
+            }
+            
             cerrar_conexion(state->epoll_fd, info);
             return;
         }
 
-        //aumentamos read_len en los n espacios que se usaron para la lectura
         info->read_len += (size_t)n;        
-        
         procesar_lineas(state, info);
     }
 }
@@ -669,33 +703,40 @@ void enviar(int epoll_fd, FdInfo* info, const char* msg){
 }
 
 static void manejar_escritura_cliente(ServerState* state, FdInfo* info){
-    //mientras haya bytes para enviar
     while(info->write_sent < info->write_len){
         ssize_t n = write(info->fd,
-             info->write_buffer + info->write_sent,// mando desde donde quede
-             info->write_len - info->write_sent);//mando lo que falta
+             info->write_buffer + info->write_sent,
+             info->write_len - info->write_sent);
 
         if( n == -1){
-            //no hay error de escritura, se espera a la proxima oportunidad 
             if(errno == EAGAIN || errno == EWOULDBLOCK){
                 return;
             }
 
             perror("write");
-            handler_disconnect(state->rm, info->fd);
+            
+            // Declaramos buffers y mandamos notificaciones en caso de error de escritura
+            Notificacion notificaciones[MAX_NOTIFICACIONES];
+            int cant_notificaciones = 0;
+            handler_disconnect(state->rm, info->fd, notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
+            
+            for(int i = 0; i < cant_notificaciones; i++){
+                char respuesta[128];
+                snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
+                         notificaciones[i].job_id, obtener_recurso(notificaciones[i].recurso), notificaciones[i].cantidad);
+                enviar_fd(notificaciones[i].socket, respuesta);
+            }
+            
             cerrar_conexion(state->epoll_fd, info);
             return;
         }
         info->write_sent += (size_t)n;
-
     }
 
     info->write_len = 0;
     info->write_sent = 0;
 
-    //una vez escrito el mensaje, prestamos atención solo a los eventos de entrada
     actualizar_eventos_epoll(state->epoll_fd, info, EPOLLIN);
-
 }
 
 /**/
@@ -899,15 +940,27 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
                 }
             }
             else if(info->type == FD_AGENTE_ERLANG || info->type == FD_AGENTE_REMOTO){
-                //events puede tener varios flags juntos, asiq que usamos &
                 if(eventos[i].events & EPOLLIN){
                     manejar_lectura_cliente(&state, info);
                 }
                 if (eventos[i].events & EPOLLOUT) {
                     manejar_escritura_cliente(&state, info);
                 }
+                
+                // NUEVO: Ajuste de handler_disconnect en el cierre por error de epoll
                 if (eventos[i].events & (EPOLLHUP | EPOLLERR)) {
-                    handler_disconnect(state.rm, info->fd);
+                    Notificacion notificaciones[MAX_NOTIFICACIONES];
+                    int cant_notificaciones = 0;
+                    
+                    handler_disconnect(state.rm, info->fd, notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
+                    
+                    for(int k = 0; k < cant_notificaciones; k++){
+                        char respuesta[128];
+                        snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
+                                 notificaciones[k].job_id, obtener_recurso(notificaciones[k].recurso), notificaciones[k].cantidad);
+                        enviar_fd(notificaciones[k].socket, respuesta);
+                    }
+                    
                     cerrar_conexion(state.epoll_fd, info);
                     continue;
                 }
