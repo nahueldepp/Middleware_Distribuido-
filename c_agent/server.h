@@ -37,6 +37,8 @@ typedef struct {
 typedef struct {
     int epoll_fd;
     ResourceManager *rm;
+    int puerto_local;
+    int puerto_publico;
 } ServerState;
 
 void enviar(int epoll_fd, FdInfo* info, const char* msg);

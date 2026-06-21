@@ -497,7 +497,7 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
         return;
     }
 
-    // 1. Manejo de JOB_REQUEST Distribuido con validación de cantidad y Rollback
+    // 1. Manejo de JOB_REQUEST Distribuido (Opción A: IP+Puerto con Ruteo Real)
     if (strncmp(linea, "JOB_REQUEST", 11) == 0) {
         int req_id;
         if (sscanf(linea, "JOB_REQUEST %d", &req_id) == 1) {
@@ -507,43 +507,38 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
             linea_copy[sizeof(linea_copy) - 1] = '\0';
             
             int todos_concedidos = 1;
-            char *token = strtok(linea_copy, " ");
+            char *token = strtok(linea_copy, " "); // Salta "JOB_REQUEST"
+            token = strtok(NULL, " ");             // Salta el id_job
             
             while (token != NULL) {
                 if (token[0] == '@') {
                     char ip[64] = {0};
+                    int puerto_req = 0;
                     char recurso[32] = {0};
                     int cant = 0;
                     
-                    if (sscanf(token + 1, "%63[^:]:%31[^:]:%d", ip, recurso, &cant) == 3) {
+                    // Parseamos siguiendo la Opción A: @IP:PUERTO:RECURSO:CANTIDAD
+                    if (sscanf(token + 1, "%63[^:]:%d:%31[^:]:%d", ip, &puerto_req, recurso, &cant) == 4) {
                         
-                        // Determinamos si es local basado en la capacidad estática de este nodo
-                        int es_local = 0;
-                        if (strcmp(recurso, "cpu") == 0 && state->rm->cpu->total > 0) es_local = 1;
-                        else if (strcmp(recurso, "gpu") == 0 && state->rm->gpu->total > 0) es_local = 1;
-                        else if (strcmp(recurso, "mem") == 0 && state->rm->mem->total > 0) es_local = 1;
-                        
-                        if (es_local) {
+                        // Es local si el puerto del fragmento coincide con nuestro propio puerto_local
+                        if (puerto_req == state->puerto_publico) {
                             char str_id[32], str_cant[32];
                             snprintf(str_id, sizeof(str_id), "%d", req_id);
                             snprintf(str_cant, sizeof(str_cant), "%d", cant);
                             
                             int res = handler_reserve(state->rm, info->fd, str_id, recurso, str_cant);
                             if (res != 1) { 
+                                // Si da 0 se encoló (QUEUED), pero para un JOB_REQUEST compuesto, 
+                                // si no se concede todo en el momento, lo consideramos fallo para hacer rollback.
                                 todos_concedidos = 0;
                             }
                         } else {
+                            // RUTEO REAL: Buscamos el vecino exactO por el puerto que nos dio Erlang
                             int puerto_remoto = -1;
-                            
-                            // SOLUCIÓN AL BUG: Parseamos el número después de los dos puntos para asegurar cantidad > 0
                             for (int i = 0; i < cantidad_nodos; i++) {
-                                char *p = strstr(tabla_nodos[i].recursos, recurso);
-                                if (p != NULL) {
-                                    int cant_disponible = atoi(p + strlen(recurso) + 1);
-                                    if (cant_disponible > 0) {
-                                        puerto_remoto = tabla_nodos[i].puerto;
-                                        break;
-                                    }
+                                if (tabla_nodos[i].puerto == puerto_req) {
+                                    puerto_remoto = tabla_nodos[i].puerto;
+                                    break;
                                 }
                             }
                             
@@ -588,24 +583,29 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
             if (todos_concedidos) {
                 snprintf(buffer_respuesta, sizeof(buffer_respuesta), "JOB_GRANTED %d\n", req_id);
             } else {
-                // --- STRATEGY: Rollback local inmediato para evitar fugas de recursos ---
+                // --- ROLLBACK REAL (Local): Deshacemos reservas y limpiamos colas si falló algo ---
                 snprintf(linea_copy, sizeof(linea_copy), "%s", linea);
                 token = strtok(linea_copy, " ");
+                token = strtok(NULL, " ");
                 while (token != NULL) {
                     if (token[0] == '@') {
-                        char ip[64] = {0}; char recurso[32] = {0}; int cant = 0;
-                        if (sscanf(token + 1, "%63[^:]:%31[^:]:%d", ip, recurso, &cant) == 3) {
-                            int es_local = 0;
-                            if (strcmp(recurso, "cpu") == 0 && state->rm->cpu->total > 0) es_local = 1;
-                            else if (strcmp(recurso, "gpu") == 0 && state->rm->gpu->total > 0) es_local = 1;
-                            else if (strcmp(recurso, "mem") == 0 && state->rm->mem->total > 0) es_local = 1;
-                            
-                            if (es_local) {
+                        char ip[64] = {0}; int puerto_req = 0; char recurso[32] = {0}; int cant = 0;
+                        if (sscanf(token + 1, "%63[^:]:%d:%31[^:]:%d", ip, &puerto_req, recurso, &cant) == 4) {
+                            if (puerto_req == state->puerto_publico) {
                                 char str_id[32], str_cant[32];
                                 snprintf(str_id, sizeof(str_id), "%d", req_id);
                                 snprintf(str_cant, sizeof(str_cant), "%d", cant);
+                                
                                 Notificacion notifs[MAX_NOTIFICACIONES]; int c_notif = 0;
-                                handler_release(state->rm, info->fd, str_id, recurso, str_cant, notifs, &c_notif, MAX_NOTIFICACIONES);
+                                // Intentamos liberarlo de activos si llegó a entrar
+                                int rel_res = handler_release(state->rm, info->fd, str_id, recurso, str_cant, notifs, &c_notif, MAX_NOTIFICACIONES);
+                                
+                                // Si no estaba activo, es porque quedó atrapado en la cola de pendientes. ¡Lo removemos para evitar corrupción!
+                                if (rel_res != 0) {
+                                    if (strcmp(recurso, "cpu") == 0) remover_de_cola_pendiente_por_id(state->rm->cpu, req_id);
+                                    else if (strcmp(recurso, "gpu") == 0) remover_de_cola_pendiente_por_id(state->rm->gpu, req_id);
+                                    else if (strcmp(recurso, "mem") == 0) remover_de_cola_pendiente_por_id(state->rm->mem, req_id);
+                                }
                             }
                         }
                     }
@@ -618,7 +618,7 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
         }
     }
     
-    // 2. Manejo de JOB_RELEASE Distribuido Unificado
+    // 2. Manejo de JOB_RELEASE Dinámico (Sin Hardcodeos)
     if (strncmp(linea, "JOB_RELEASE", 11) == 0) {
         int req_id;
         if (sscanf(linea, "JOB_RELEASE %d", &req_id) == 1) {
@@ -628,12 +628,20 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
             Notificacion notificaciones[MAX_NOTIFICACIONES];
             int cant_notificaciones = 0;
             
-            // Liberamos preventivamente local
-            handler_release(state->rm, info->fd, str_id, "cpu", "2", notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
-            handler_release(state->rm, info->fd, str_id, "gpu", "1", notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
-            handler_release(state->rm, info->fd, str_id, "mem", "8", notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
+            // Liberamos dinámicamente usando la nueva función que creamos para resource_manager.c
+            int res = handler_release(state->rm, info->fd, str_id, "todo", "0", notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
             
-            // Replicamos la liberación a los vecinos
+            if (res == 0) {
+                // Notificamos localmente a Erlang si se destrabaron otros trabajos en nuestras colas
+                for(int k = 0; k < cant_notificaciones; k++){
+                    char respuesta[128];
+                    snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
+                             notificaciones[k].job_id, obtener_recurso(notificaciones[k].recurso), notificaciones[k].cantidad);
+                    enviar_fd(notificaciones[k].socket, respuesta);
+                }
+            }
+            
+            // Replicamos la orden de liberación a absolutamente todos los nodos vecinos
             for (int i = 0; i < cantidad_nodos; i++) {
                 int rem_fd = socket(AF_INET, SOCK_STREAM, 0);
                 struct sockaddr_in rem_addr;
@@ -643,11 +651,11 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                 rem_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
                 
                 if (connect(rem_fd, (struct sockaddr*)&rem_addr, sizeof(rem_addr)) == 0) {
-                    char cmd_release_cpu[128], cmd_release_gpu[128];
-                    snprintf(cmd_release_cpu, sizeof(cmd_release_cpu), "RELEASE %d cpu 2\n", req_id);
-                    snprintf(cmd_release_gpu, sizeof(cmd_release_gpu), "RELEASE %d gpu 1\n", req_id);
-                    send(rem_fd, cmd_release_cpu, strlen(cmd_release_cpu), 0);
-                    send(rem_fd, cmd_release_gpu, strlen(cmd_release_gpu), 0);
+                    char cmd_release_vecino[256];
+                    // Mandamos un RELEASE genérico para que el vecino limpie lo que tenga de este id
+                    // Como el vecino usa el `handler_release_dinamico_remoto` o sabe buscar por id, lo procesará bien.
+                    snprintf(cmd_release_vecino, sizeof(cmd_release_vecino), "RELEASE %d todo 0\n", req_id); 
+                    send(rem_fd, cmd_release_vecino, strlen(cmd_release_vecino), 0);
                     close(rem_fd);
                 } else {
                     close(rem_fd);
@@ -876,6 +884,8 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
     ServerState state;
     state.epoll_fd = epoll_fd;
     state.rm = rm;
+    state.puerto_local = puerto_local;
+    state.puerto_publico = puerto_publico;
 
     if(epoll_fd == -1){
         perror("epoll_create1");

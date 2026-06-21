@@ -47,10 +47,25 @@ iniciar(PuertoC) ->
 
                     io:format("Scheduler: Nodos ordenados listos: ~p~n", [NodosOrdenados]),
 
-                    %% Iniciamos al simulador, que se encargará de representar pedidos de Jobs.
-                    %% No uso spawn_link porque no quiero que un error en el simulador tumbe al scheduler.
-                    [{IpA, _, _}, {IpB, _, _} | _] = NodosOrdenados,
-                    spawn(simulador, forzar_deadlock, [self(), {IpA, IpB}]),
+                    case NodosOrdenados of
+                        [{IpA, PuertoA, _}, {IpB, PuertoB, _} | _] ->
+                            io:format(
+                                "Scheduler: lanzando escenario de deadlock forzado entre ~s:~s y ~s:~s~n",
+                                [IpA, PuertoA, IpB, PuertoB]
+                            ),
+                            spawn(simulador, forzar_deadlock, [
+                                self(), {{IpA, PuertoA}, {IpB, PuertoB}}
+                            ]);
+                        [_UnSolo] ->
+                            io:format(
+                                "Scheduler: solo hay un nodo disponible. No se puede forzar el escenario. Arranco el modo de carga normal.~n"
+                            ),
+                            spawn(simulador, iniciar, [self(), NodosOrdenados]);
+                        [] ->
+                            io:format(
+                                "Scheduler: no hay nodos disponibles. El simulador no arranca.~n"
+                            )
+                    end,
 
                     %% Entramos al bucle principal con el mapa ordenado, la lista de JobsActivos vacía y la lista de consultas de status pendientes, también vacía al principio.
                     bucle_gerente(Socket, NodosOrdenados, [], [])
@@ -95,10 +110,11 @@ bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes) ->
         %% Llega una respuesta de C (de la forma "JOB_GRANTED 1001", "JOB_DENIED 1001" o "JOB_TIMEOUT 1001")
         {respuesta_c, MensajeC} ->
             case string:lexemes(MensajeC, " ") of
-                ["[ERROR]" | _] -> 
-                    io:format("Scheduler: Alerta, el agente C respondio un error -> ~s~n", [MensajeC]),
+                ["[ERROR]" | _] ->
+                    io:format("Scheduler: Alerta, el agente C respondio un error -> ~s~n", [
+                        MensajeC
+                    ]),
                     bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes);
-
                 [Accion, IdStr | _Resto] ->
                     IdJob = list_to_integer(IdStr),
                     %% Chequeamos primero si el IdJob tiene una consulta de status pendiente. La mostramos/logueamos pero no disparamos el timer de liberación ni avisamos al simulador.
@@ -245,10 +261,10 @@ prioridad_recurso("gpu") -> 3.
 %% Ordenamos por dos niveles: primero por IP y luego por el orden de recurso establecido (cpu -> mem -> gpu). Esto garantiza un Orden Total en toda la red y previene deadlocks.
 armar_peticion(IdJob, RecursosPedidos) ->
     PeticionesOrdenadas = lists:sort(
-        fun({IpA, RecursoA, _}, {IpB, RecursoB, _}) ->
-            case IpA =:= IpB of
+        fun({IpA, PuertoA, RecursoA, _}, {IpB, PuertoB, RecursoB, _}) ->
+            case {IpA, PuertoA} =:= {IpB, PuertoB} of
                 true -> prioridad_recurso(RecursoA) =< prioridad_recurso(RecursoB);
-                false -> IpA =< IpB
+                false -> {IpA, PuertoA} =< {IpB, PuertoB}
             end
         end,
         RecursosPedidos
@@ -257,8 +273,8 @@ armar_peticion(IdJob, RecursosPedidos) ->
     ComandoBase = io_lib:format("JOB_REQUEST ~p", [IdJob]),
 
     Fragmentos = [
-        io_lib:format(" @~s:~s:~p", [IP, Recurso, Cantidad])
-     || {IP, Recurso, Cantidad} <- PeticionesOrdenadas
+        io_lib:format(" @~s:~s:~s:~p", [IP, Puerto, Recurso, Cantidad])
+     || {IP, Puerto, Recurso, Cantidad} <- PeticionesOrdenadas
     ],
 
     lists:flatten([ComandoBase | Fragmentos]).
