@@ -2,82 +2,111 @@
 
 Este proyecto consiste en un middleware distribuido, heterogéneo e interoperable diseñado para coordinar la asignación y liberación de recursos de hardware (CPU, memoria y GPU) en un clúster de nodos de cómputo en tiempo real. 
 
-El sistema implementa una arquitectura híbrida que combina la robustez en la coordinación global de **Erlang** con la eficiencia de bajo nivel y el procesamiento dirigido por eventos de **Lenguaje C**.
+El sistema implementa una arquitectura híbrida que combina la robustez en la coordinación global y el modelo de actores de **Erlang** con la eficiencia de bajo nivel y el procesamiento dirigido por eventos de **Lenguaje C**.
 
 ---
 
 ## Arquitectura del Sistema
 
-El middleware se divide en dos componentes principales que se comunican mediante sockets TCP locales a través del protocolo textual estandarizado en la sección **§5.3**:
+El middleware se divide en dos componentes principales que se comunican mediante sockets TCP locales a través del protocolo de la interfaz local estandarizado en las secciones **§4.1** y **§4.2** del enunciado:
 
 1. **Planificador Global (Erlang):** Centraliza las solicitudes de los Jobs a través de un lazo asincrónico basado en actores, gestiona el ciclo de vida de los procesos concurrentes y previene activamente situaciones de bloqueo mutuo (*deadlocks*).
 2. **Agente de Concurrencia Local (C):** Se ejecuta en cada nodo físico multiplexando la entrada/salida de forma no bloqueante mediante `epoll`. Administra el stock local a través del `ResourceManager` y descubre dinámicamente a sus pares mediante ráfagas periódicas de UDP Broadcast.
 
-### Estrategia Anti-Deadlock
-Para romper la condición de *espera circular* de Coffman, el planificador de Erlang impone un **Orden Total** estricto en la adquisición de recursos antes de despachar cualquier comando `JOB_REQUEST` hacia la capa en C:
-* **Nivel 1:** Ordenamiento jerárquico lexicográfico por dirección IP del nodo destino.
-* **Nivel 2:** Ordenamiento de prioridad fijo por tipo de recurso físico (`cpu` $\rightarrow$ `mem` $\rightarrow$ `gpu`).
+### Estrategia Anti-Deadlock (Prevención por Orden Total)
+Para romper la condición de *espera circular* de Coffman en el entorno distribuido, el planificador de Erlang impone un **Orden Total** estricto en la adquisición de recursos antes de despachar cualquier comando `JOB_REQUEST` hacia la capa en C:
+* **Nivel 1:** Ordenamiento jerárquico global por el par **`{IP, PuertoLocal}`** del nodo destino (Opción A). Esto evita la ambigüedad cuando se simulan múltiples nodos dentro de una misma máquina de testeo.
+* **Nivel 2:** Ordenamiento de prioridad interno fijo por tipo de recurso físico (`cpu` $\rightarrow$ `mem` $\rightarrow$ `gpu`).
 
 ---
 
 ## Requisitos Previos
 
 Asegúrese de contar con las siguientes herramientas instaladas en su entorno Linux:
-* Compilador `gcc` (soporte para llamadas del sistema POSIX y `epoll`).
-* Entorno de ejecución de Erlang (OTP 25 o superior / `erl`).
-* Utilidad `netcat` (`nc`) para simulaciones de red aisladas.
+* Compilador `gcc` y herramienta `make` (soporte para llamadas del sistema POSIX y `epoll`).
+* Entorno de ejecución de Erlang (OTP 25 o superior / `erlc` y `erl`).
 
 ---
 
-## Guía de Ejecución Rápida
+## Guía de Compilación y Ejecución
 
-Siga este orden secuencial para iniciar el entorno distribuido en su máquina local:
+El proyecto incluye un `Makefile` unificado en la raíz que compila de forma simultánea el binario en C y los archivos lógicos de Erlang.
 
-### 1. Compilar y Levantar el Agente en C
-Navegue hasta el directorio del agente, compile el binario nativo y ejecútelo especificando el **puerto público** (comunicación entre nodos) y el **puerto local** (interfaz de Erlang):
-
+### 1. Compilación Unificada
+Ejecute el siguiente comando en la raíz del repositorio:
 ```bash
-gcc -Wall -Wextra -g c_agent/server.c -o agent
-./agent 8100 9100
+make
 
 ```
 
-### 2. Levantar el Planificador de Erlang
+Esto generará el ejecutable nativo `./agent` y colocará los archivos binarios de Erlang (`.beam`) dentro del directorio `/erlang_scheduler`.
 
-En una nueva terminal (en la raíz del proyecto), compile los módulos lógicos e inicialice el componente del planificador indicando el puerto de la interfaz local del agente en C (`9100`):
+### 2. Ejecución Manual de un Agente (C)
+
+Para levantar un nodo individual, ejecute el binario especificando los 5 parámetros obligatorios de inicialización:
 
 ```bash
-erlc cliente_tcp.erl scheduler.erl
-erl -noshell -s scheduler iniciar 9100 -s init stop
+./agent <puerto_publico> <puerto_local> <cant_cpu> <cant_memoria> <cant_gpu>
 
 ```
 
-Al iniciar, el planificador se conectará de forma automática al puerto TCP local del agente, le enviará el comando `GET NODES` y spawneará de forma interna el proceso del simulador para comenzar a procesar Jobs de forma distribuida.
+*Ejemplo para el Nodo A:*
+
+```bash
+./agent 8100 9100 2 8 0
+
+```
+
+### 3. Ejecución Manual del Planificador (Erlang)
+
+En una nueva terminal, inicialice el componente del planificador indicando el puerto de la interfaz local del agente en C al que desea conectarse (ej. `9100`):
+
+```bash
+erl -noshell -pa erlang_scheduler -eval "scheduler:iniciar(9100)." -s init stop
+
+```
 
 ---
 
-## Pruebas, Simulación y Logs
+## Pruebas Automatizadas (Escenarios del TP)
 
-### Formato de Comunicación del Protocolo
+Para facilitar la evaluación y la demo en vivo, el repositorio cuenta con dos scripts de automatización dentro de la carpeta `/scripts` que recrean las condiciones de contención distribuidas descritas en la sección **§6**:
 
-Cuando el sistema corre de forma integrada, la interacción textual sigue la especificación de la cátedra mediante los siguientes comandos automáticos:
+### Escenario A: Contención y Prevención de Deadlock
 
-* `JOB_REQUEST <IdJob> @<IP>:<Recurso>:<Cantidad>`: Solicitud ordenada secuencialmente enviada por Erlang.
-* `JOB_GRANTED <IdJob>` / `JOB_DENIED <IdJob>`: Veredicto síncrono retornado por el agente en C.
-* `JOB_RELEASE <IdJob>`: Directiva de liberación mandatoria despachada por Erlang tras cumplirse un tiempo de uso fijo de 5 segundos (`5000ms`).
-
-### Monitoreo del Clúster
-
-Toda la actividad del middleware (la conexión con C, el parseo de los recursos del hardware, la generación de identificadores únicos de Jobs y las resoluciones de asignación) queda registrada de forma permanente. Puede monitorear la bitácora del clúster en tiempo real ejecutando:
+Simula el solapamiento temporal exacto del enunciado (Job1 y Job2 cruzados) bajo condiciones de escasez. Demuestra cómo el sistema resuelve la contención de hardware de forma segura mediante un rechazo controlado sin colgarse jamás:
 
 ```bash
-tail -f scheduler.log
+chmod +x scripts/test_deadlock.sh
+./scripts/test_deadlock.sh
 
 ```
+
+*Resultado esperado:* Un Job terminará en `JOB_GRANTED` y el otro en `JOB_DENIED` debido al Orden Total estricto.
+
+### Escenario B: Flujo Concurrente Completo (Sin Escasez)
+
+Simula el mismo entorno cruzado pero otorgándole hardware de sobra a los nodos para comprobar que ambos Jobs se conceden limpios en paralelo si la red posee la capacidad suficiente:
+
+```bash
+chmod +x scripts/test_sin_deadlock.sh
+./scripts/test_sin_deadlock.sh
+
+```
+
+*Resultado esperado:* Ambos Jobs finalizan exitosamente en `JOB_GRANTED`.
 
 ---
 
 ## Estructura del Repositorio
 
-* `/c_agent`: Código fuente del servidor multipuerto en C, lógica de red basada en `epoll` y descubrimiento UDP broadcast.
-* `/`: Módulos de orquestación, planificador de red y prevención de deadlocks en Erlang (`scheduler.erl`, `cliente_tcp.erl`).
+* `/c_agent`: Código fuente del servidor multipuerto en C (`main.c`, `server.c`), lógica de red basada en `epoll` y estructuras del administrador de pozo (`resource_manager.c`).
+
+
+* `/erlang_scheduler`: Módulos de orquestación asincrónica, lógica de la interfaz cliente TCP y ordenamiento preventivo anti-deadlocks en Erlang (`scheduler.erl`, `simulador.erl`, `cliente_tcp.erl`).
+
+
+* `/scripts`: Scripts Bash automatizados para el despliegue y control de las simulaciones locales de interbloqueo.
+
+
+* `/Makefile`: Directivas del sistema de automatización de compilación unificada.
