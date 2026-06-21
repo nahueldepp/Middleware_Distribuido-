@@ -10,9 +10,50 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <time.h>
 
 #include "server.h"
 
+#define READ_BUFFER_SIZE 4096
+#define WRITE_BUFFER_SIZE 4096
+#define MAX_EVENTS 64
+#define MAX_NODOS 32
+
+typedef enum {
+    FD_ESCUCHA_PUBLICO,
+    FD_ESCUCHA_LOCAL,
+    FD_CLIENTE,
+    FD_AGENTE_REMOTO,
+    FD_AGENTE_ERLANG,
+    FD_UDP_BROADCAST
+}FdTipo;
+
+typedef struct {
+    char ip[INET_ADDRSTRLEN];
+    int puerto;
+    char recursos[128]; 
+    time_t ultima_vez;  
+} NodoVecino;
+
+NodoVecino tabla_nodos[MAX_NODOS];
+int cantidad_nodos = 0;
+
+typedef struct {
+    int fd;
+    FdTipo type;
+
+    //buffer de lectura por conexion
+    //para los bytes recibidos que todavia se estan procesando
+    char read_buffer[READ_BUFFER_SIZE];
+    size_t read_len;
+
+    //bytes que quiero mandar pero todavia no termine de escribir
+    char write_buffer[WRITE_BUFFER_SIZE];
+    //bytes totales para mandar
+    size_t write_len;
+    //bytes que se mandaron
+    size_t write_sent;
+} FdInfo;
 
 
 /*Prototipos*/
@@ -30,6 +71,10 @@ static void manejar_lectura_cliente(ServerState* state, FdInfo* info);
 void enviar(int epoll_fd, FdInfo* info, const char* msg);
 static int enviar_fd(int fd, const char *mensaje);
 static void manejar_escritura_cliente(int epoll_fd, FdInfo* info);
+static int crear_socket_udp_broadcast(int puerto);
+static void enviar_anuncio_presence(int udp_fd, int puerto_publico);
+static void limpiar_nodos_expirados();
+static void manejar_lectura_udp(int udp_fd);
 /*==================================================Implementaciones ===========================================*/
 
 static const char* obtener_recurso(int intRecurso){
@@ -201,6 +246,8 @@ static const char* fd_tipo(FdTipo tipo){
             return "puerto_escucha_local";
         case FD_ESCUCHA_PUBLICO:
             return "puerto_escucha_publica";
+        case FD_UDP_BROADCAST:
+            return "udp_broadcast";
         default:
             return "no_registrado";
     }
@@ -345,6 +392,37 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
     char cantidad[32];
 
     printf("[LINE fd:<%d> tipo:<%s>] %s\n", info->fd,fd_tipo(info->type), linea);
+
+    if (strncmp(linea, "GET NODES", 9) == 0) {
+        limpiar_nodos_expirados();
+
+        char respuesta[4096] = "NODES\n";
+        char listado[3500] = "";
+
+        for (int i = 0; i < cantidad_nodos; i++) {
+            char nodo_str[256];
+            char rec_formateados[128];
+            strncpy(rec_formateados, tabla_nodos[i].recursos, 128);
+            
+            // Reemplaza espacios por dos puntos para cumplir el protocolo de Erlang
+            for(int k = 0; rec_formateados[k]; k++) {
+                if(rec_formateados[k] == ' ') rec_formateados[k] = ':';
+            }
+
+            snprintf(nodo_str, sizeof(nodo_str), "%s:%d:%s", 
+                     tabla_nodos[i].ip, tabla_nodos[i].puerto, rec_formateados);
+            
+            strcat(listado, nodo_str);
+            if (i < cantidad_nodos - 1) {
+                strcat(listado, ";");
+            }
+        }
+        strcat(respuesta, listado);
+        strcat(respuesta, "\n");
+        enviar(state->epoll_fd, info, respuesta);
+        return;
+    }
+    
     /*sscanf usa el formato %31s para leer el comando y el recurso pedido*/
     if(sscanf(linea, "%31s %31s %31s %31s",cmd, job_id, resource, cantidad) == 4){
 
@@ -488,13 +566,116 @@ static void actualizar_eventos_epoll(int epoll_fd, FdInfo* info, uint16_t events
 
 }
 
+static int crear_socket_udp_broadcast(int puerto) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd == -1) { perror("socket UDP"); exit(EXIT_FAILURE); }
+
+    int broadcast_enable = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcast_enable, sizeof(broadcast_enable)) == -1) {
+        perror("setsockopt SO_BROADCAST");
+        exit(EXIT_FAILURE);
+    }
+
+    int opt = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1) {
+        perror("setsockopt SO_REUSEADDR UDP");
+        exit(EXIT_FAILURE);
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(puerto);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+        perror("bind UDP");
+        exit(EXIT_FAILURE);
+    }
+
+    if (set_nobloqueante(fd) == -1) { exit(EXIT_FAILURE); }
+    return fd;
+}
+
+static void enviar_anuncio_presence(int udp_fd, int puerto_publico) {
+    struct sockaddr_in bc_addr;
+    memset(&bc_addr, 0, sizeof(bc_addr));
+    bc_addr.sin_family = AF_INET;
+    bc_addr.sin_port = htons(8888); // Puerto compartido de broadcast
+    bc_addr.sin_addr.s_addr = inet_addr("255.255.255.255");
+
+    char mensaje[256];
+    snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %d cpu:4 mem:8192 gpu:1\n", puerto_publico);
+
+    sendto(udp_fd, mensaje, strlen(mensaje), 0, (struct sockaddr*)&bc_addr, sizeof(bc_addr));
+}
+
+static void limpiar_nodos_expirados() {
+    time_t ahora = time(NULL);
+    int i = 0;
+    while (i < cantidad_nodos) {
+        if (difftime(ahora, tabla_nodos[i].ultima_vez) >= 15.0) {
+            printf("[UDP] Nodo caído por inactividad: %s:%d\n", tabla_nodos[i].ip, tabla_nodos[i].puerto);
+            for (int j = i; j < cantidad_nodos - 1; j++) {
+                tabla_nodos[j] = tabla_nodos[j + 1];
+            }
+            cantidad_nodos--;
+        } else {
+            i++;
+        }
+    }
+}
+
+static void manejar_lectura_udp(int udp_fd) {
+    char buffer[512];
+    struct sockaddr_in desde_addr;
+    socklen_t desde_len = sizeof(desde_addr);
+
+    ssize_t n = recvfrom(udp_fd, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&desde_addr, &desde_len);
+    if (n <= 0) return;
+    buffer[n] = '\0';
+
+    char cmd[32], recursos[128];
+    int puerto;
+    
+    // El sscanf ahora busca: ANNOUNCE <puerto> <recursos>
+    if (sscanf(buffer, "%31s %d %[^\n]", cmd, &puerto, recursos) == 3) {
+        if (strcmp(cmd, "ANNOUNCE") == 0) {
+            
+            // EXTRAEMOS LA IP DINÁMICAMENTE DESDE recvfrom() COMO PIDE EL CAMBIO
+            char ip_remota[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &desde_addr.sin_addr, ip_remota, sizeof(ip_remota));
+            
+            time_t ahora = time(NULL);
+            int encontrado = 0;
+
+            // Verificamos si ya conocemos al nodo para actualizar su timestamp
+            for (int i = 0; i < cantidad_nodos; i++) {
+                if (strcmp(tabla_nodos[i].ip, ip_remota) == 0 && tabla_nodos[i].puerto == puerto) {
+                    tabla_nodos[i].ultima_vez = ahora;
+                    strncpy(tabla_nodos[i].recursos, recursos, sizeof(tabla_nodos[i].recursos));
+                    encontrado = 1;
+                    break;
+                }
+            }
+
+            // Si es un nodo nuevo, lo agregamos a la tabla con la IP extraída de recvfrom
+            if (!encontrado && cantidad_nodos < MAX_NODOS) {
+                strncpy(tabla_nodos[cantidad_nodos].ip, ip_remota, INET_ADDRSTRLEN);
+                tabla_nodos[cantidad_nodos].puerto = puerto;
+                strncpy(tabla_nodos[cantidad_nodos].recursos, recursos, 128);
+                tabla_nodos[cantidad_nodos].ultima_vez = ahora;
+                cantidad_nodos++;
+                printf("[UDP] Nodo registrado dinámicamente desde recvfrom: %s:%d\n", ip_remota, puerto);
+            }
+        }
+    }
+}
 
 void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
-
-
-    //INADDR_ANY
     int escucha_publica = crear_socket_escucha("0.0.0.0", puerto_publico);
     int escucha_local = crear_socket_escucha("127.0.0.1", puerto_local);
+    int udp_fd = crear_socket_udp_broadcast(8888);
 
     int epoll_fd = epoll_create1(0);
 
@@ -504,48 +685,79 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
 
     if(epoll_fd == -1){
         perror("epoll_create1");
-        return ;
+        close(escucha_local);
+        close(escucha_publica);
+        close(udp_fd);
+    return;
     }
 
     agregar_fd_a_epoll(epoll_fd, escucha_local, FD_ESCUCHA_LOCAL);
     agregar_fd_a_epoll(epoll_fd, escucha_publica, FD_ESCUCHA_PUBLICO);
+    agregar_fd_a_epoll(epoll_fd, udp_fd, FD_UDP_BROADCAST);
 
     struct epoll_event eventos[MAX_EVENTS];
 
-    printf("[INFO] Escucha activa\n");
+    printf("[INFO] Lanzando anuncio inicial de presencia (espera pasiva de 2 segundos)...\n");
+    enviar_anuncio_presence(udp_fd, puerto_publico); // Anuncio inmediato al arrancar 
+    
+    time_t inicio_espera = time(NULL);
+    while(difftime(time(NULL), inicio_espera) < 2.0) { // Bloque de espera activa controlada de 2s 
+        int n = epoll_wait(epoll_fd, eventos, MAX_EVENTS, 500); // Ciclos cortos de timeout para capturar ráfagas UDP
+        for(int i = 0; i < n; i++) {
+            FdInfo* info = eventos[i].data.ptr;
+            if(info->type == FD_UDP_BROADCAST && (eventos[i].events & EPOLLIN)) {
+                manejar_lectura_udp(info->fd);
+            }
+        }
+    }
+    printf("[INFO] Fin del arranque inicial. Pasando a modo de escucha activa regular.\n");
+
+    time_t ultimo_anuncio = time(NULL);
 
     while(1){
-        int n = epoll_wait(epoll_fd, eventos, MAX_EVENTS, -1);
+        // Cambiamos -1 por 1000ms (1s) para que el bucle despierte solo y podamos computar el paso del tiempo
+        int n = epoll_wait(epoll_fd, eventos, MAX_EVENTS, 1000); 
 
         if(n == -1){
+            if(errno == EINTR) continue; // Por si una señal interrumpe la llamada del epoll
             perror("epoll_wait");
             break;
         }
 
-        for(int i = 0; i<n; i++){
-            FdInfo* info = eventos[i].data.ptr; // info del fd
+        time_t ahora = time(NULL);
+        if(difftime(ahora, ultimo_anuncio) >= 5.0) {
+            enviar_anuncio_presence(udp_fd, puerto_publico); // Re-anunciar presencia
+            limpiar_nodos_expirados();                       // Limpieza automática tras 15s de silencio 
+            ultimo_anuncio = ahora;
+        }
 
-            //si el evento se registro algunos de los puertos de escucha sera un cliente, lo aceptamos
+        for(int i = 0; i < n; i++){
+            FdInfo* info = eventos[i].data.ptr;
+
             if(info->type == FD_ESCUCHA_LOCAL ){
                 aceptar_clientes(epoll_fd, info->fd, FD_AGENTE_ERLANG);
             }
             else if(info->type == FD_ESCUCHA_PUBLICO){
                 aceptar_clientes(epoll_fd, info->fd, FD_AGENTE_REMOTO);
             }
-            //el evento se registro en un cliente
+            else if(info->type == FD_UDP_BROADCAST) {
+                if(eventos[i].events & EPOLLIN) {
+                    manejar_lectura_udp(info->fd);
+                }
+            }
             else if(info->type == FD_AGENTE_ERLANG || info->type == FD_AGENTE_REMOTO){
                 if(eventos[i].events == EPOLLIN){
                     manejar_lectura_cliente(&state, info);
                 }
                 if (eventos[i].events == EPOLLOUT) {
                     manejar_escritura_cliente(state.epoll_fd, info);
-                    
                 }
             }
         }
     }
     close(escucha_local);
     close(escucha_publica);
+    close(udp_fd);
     close(epoll_fd);
     return;
 }
