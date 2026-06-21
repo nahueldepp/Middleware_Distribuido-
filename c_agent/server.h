@@ -13,9 +13,9 @@ typedef enum {
     FD_ESCUCHA_LOCAL,
     FD_CLIENTE,
     FD_AGENTE_REMOTO,
-    FD_AGENTE_ERLANG
+    FD_AGENTE_ERLANG,
+    FD_UDP_BROADCAST
 }FdTipo;
-
 
 typedef struct {
     int fd;
@@ -34,7 +34,6 @@ typedef struct {
     size_t write_sent;
 } FdInfo;
 
-
 typedef struct {
     int epoll_fd;
     ResourceManager *rm;
@@ -43,6 +42,5 @@ typedef struct {
 void enviar(int epoll_fd, FdInfo* info, const char* msg);
 
 void server_run(int puerto_publico, int puerto_local, ResourceManager *rm);
-
 
 #endif
