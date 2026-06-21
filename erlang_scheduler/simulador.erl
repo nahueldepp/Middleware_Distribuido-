@@ -33,21 +33,22 @@ iniciar_random(PidScheduler, NodosDisponibles, Contador) ->
 generar_pedido_random(NodosDisponibles) ->
     CantidadNodos = rand:uniform(2),
     NodosElegidos = elegir_n_al_azar(CantidadNodos, NodosDisponibles),
-    %% lists:append junta las listas de pedidos de cada nodo en una sola lista plana [{IP, Recurso, Cantidad}, ...], que es lo que espera scheduler:armar_peticion/2.
+    %% lists:append junta las listas de pedidos de cada nodo en una sola lista plana [{IP, Puerto, Recurso, Cantidad}, ...], que es lo que espera scheduler:armar_peticion.
     lists:append([pedidos_para_nodo(Nodo) || Nodo <- NodosElegidos]).
 
 %% Para un nodo dado, elige entre 1 y todos sus recursos disponibles y arma un pedido por cada uno.
+%% Ahora conservamos el Puerto: cada pedido es {IP, Puerto, Recurso, Cantidad}, porque la identidad real de un nodo es IP+Puerto (dos nodos pueden compartir IP).
 pedidos_para_nodo({_IP, _Puerto, []}) ->
     [];
-pedidos_para_nodo({IP, _Puerto, Recursos}) ->
+pedidos_para_nodo({IP, Puerto, Recursos}) ->
     CantidadRecursos = rand:uniform(length(Recursos)),
     RecursosElegidos = elegir_n_al_azar(CantidadRecursos, Recursos),
-    [pedido_para_recurso(IP, Recurso, Total) || {Recurso, Total} <- RecursosElegidos].
+    [pedido_para_recurso(IP, Puerto, Recurso, Total) || {Recurso, Total} <- RecursosElegidos].
 
-pedido_para_recurso(IP, Recurso, Total) ->
+pedido_para_recurso(IP, Puerto, Recurso, Total) ->
     %% Pedimos entre 1 y el total disponible del recurso.
     Cantidad = rand:uniform(max(1, Total)),
-    {IP, Recurso, Cantidad}.
+    {IP, Puerto, Recurso, Cantidad}.
 
 elegir_n_al_azar(N, Lista) when N >= length(Lista) ->
     Lista;
@@ -55,18 +56,18 @@ elegir_n_al_azar(N, Lista) ->
     Mezclada = [{rand:uniform(), X} || X <- Lista],
     [X || {_, X} <- lists:sublist(lists:sort(Mezclada), N)].
 
-%% Función para forzar el deadlock del escenario propuesto en el Trabajo Práctico.
-forzar_deadlock(PidScheduler, {IpNodoA, IpNodoB}) ->
+%% Función para forzar el deadlock del escenario propuesto en el Trabajo Práctico. Ahora recibe la identidad completa de cada nodo: {IP, Puerto}.
+forzar_deadlock(PidScheduler, {{IpNodoA, PuertoA}, {IpNodoB, PuertoB}}) ->
     io:format(
-        "Simulador: FORZANDO escenario de deadlock (Nodo A=~s, Nodo B=~s)~n",
-        [IpNodoA, IpNodoB]
+        "Simulador: FORZANDO escenario de deadlock (Nodo A=~s:~s, Nodo B=~s:~s)~n",
+        [IpNodoA, PuertoA, IpNodoB, PuertoB]
     ),
 
     %% Job1: necesita 2 CPUs de A y 1 GPU de B (tal como describe el TP).
-    Pedido1 = [{IpNodoA, "cpu", 2}, {IpNodoB, "gpu", 1}],
+    Pedido1 = [{IpNodoA, PuertoA, "cpu", 2}, {IpNodoB, PuertoB, "gpu", 1}],
 
     %% Job2: necesita 1 GPU de B y 2 CPUs de A
-    Pedido2 = [{IpNodoB, "gpu", 1}, {IpNodoA, "cpu", 2}],
+    Pedido2 = [{IpNodoB, PuertoB, "gpu", 1}, {IpNodoA, PuertoA, "cpu", 2}],
 
     %% Los lanzamos como dos procesos separados, "casi al mismo tiempo".
     PidJob1 = self(),
