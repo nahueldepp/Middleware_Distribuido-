@@ -111,7 +111,7 @@ static void hash_insertar(struct hash_activos * tabla, int id, int socket, int t
 // devuelve 1 si el trabajo fue concedido, 0 si fue encolado y -1 en caso de error
 int handler_reserve(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad){
     int id = atoi(string_id);
-    unsigned cantidad = atoi(string_cantidad);
+    unsigned int cantidad = atoi(string_cantidad);
     int rec = parsear_recurso(string_recurso);
 
     recurso r = NULL;
@@ -172,9 +172,11 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
         if (actual == NULL) { printf("Error: JOB inexistente\n"); return -1;}
 
         if (rec == -1){ printf("Error: recurso incorrecto\n"); return -1; }
-        else if (rec == 0){ if(actual->cpu_asignado < (unsigned int)cantidad) return -1; actual->cpu_asignado -= cantidad;}
-        else if (rec == 1){if(actual->gpu_asignado < (unsigned int)cantidad) return -1; actual->gpu_asignado -= cantidad;}
-        else if (rec == 2){if(actual->mem_asignado < (unsigned int)cantidad) return -1; actual->mem_asignado -= cantidad;}
+
+        else if (rec == 0){ if(actual->cpu_asignado < cantidad) return -1; actual->cpu_asignado -= cantidad;}
+        else if (rec == 1){if(actual->gpu_asignado < cantidad) return -1; actual->gpu_asignado -= cantidad;}
+        else if (rec == 2){if(actual->mem_asignado < cantidad) return -1; actual->mem_asignado -= cantidad;}
+
         //agrego suma de recurso en esta rama
         sumar_recurso(rm, rec, cantidad);
         if (actual->cpu_asignado == 0 && actual->gpu_asignado == 0 && actual->mem_asignado == 0){
@@ -239,7 +241,7 @@ void limpiar_cola(recurso r, int socket){
 
 // handler_disconnect: funcion principal encargada de manejar una desconexion repentina de un cliente.
 // libera tanto los trabajos activos como los pendientes asociados a un socket.
-void handler_disconnect(ResourceManager * rm, int socket){
+void handler_disconnect(ResourceManager * rm, int socket, Notificacion* notificaciones, int* cant_notificaciones, int cant_max){
     int tam = rm->activos->capacidad;
 
     for (int i = 0; i < tam; i++){
@@ -271,7 +273,32 @@ void handler_disconnect(ResourceManager * rm, int socket){
             }
         }
     }
+
     limpiar_cola(rm->cpu, socket);
     limpiar_cola(rm->gpu, socket);
     limpiar_cola(rm->mem, socket);
+
+    recurso recursos_a_revisar[3] = {rm->cpu, rm->gpu, rm->mem};
+
+    for (int j = 0; j < 3; j++) {
+        recurso r = recursos_a_revisar[j];
+        while (r != NULL && r->primero != NULL && r->disponible >= r->primero->cantidad && *cant_notificaciones < cant_max) {
+
+            unsigned int id_pendiente = r->primero->id;
+            int socket_pendiente = r->primero->socket;
+            unsigned int cantidad_pendiente = r->primero->cantidad;
+
+            desencolar(r);
+
+            r->disponible -= cantidad_pendiente;
+            // el tipo de recurso es j (0=cpu, 1=gpu, 2=mem)
+            hash_insertar(rm->activos, id_pendiente, socket_pendiente, j, cantidad_pendiente);
+
+            notificaciones[*cant_notificaciones].socket = socket_pendiente;
+            notificaciones[*cant_notificaciones].job_id = id_pendiente;
+            notificaciones[*cant_notificaciones].recurso = j;
+            notificaciones[*cant_notificaciones].cantidad = cantidad_pendiente;
+            (*cant_notificaciones)++;
+        }
+    }
 }
