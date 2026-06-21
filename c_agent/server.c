@@ -13,38 +13,10 @@
 
 #include "server.h"
 
-#define READ_BUFFER_SIZE 4096
-#define WRITE_BUFFER_SIZE 4096
-#define MAX_EVENTS 64
-
-typedef enum {
-    FD_ESCUCHA_PUBLICO,
-    FD_ESCUCHA_LOCAL,
-    FD_CLIENTE,
-    FD_AGENTE_REMOTO,
-    FD_AGENTE_ERLANG
-}FdTipo;
-
-
-typedef struct {
-    int fd;
-    FdTipo type;
-
-    //buffer de lectura por conexion
-    //para los bytes recibidos que todavia se estan procesando
-    char read_buffer[READ_BUFFER_SIZE];
-    size_t read_len;
-
-    //bytes que quiero mandar pero todavia no termine de escribir
-    char write_buffer[WRITE_BUFFER_SIZE];
-    //bytes totales para mandar
-    size_t write_len;
-    //bytes que se mandaron
-    size_t write_sent;
-} FdInfo;
 
 
 /*Prototipos*/
+static const char* obtener_recurso(int intRecurso);
 static int set_nobloqueante(int fd);
 static int crear_socket_escucha(const char* ip, int port);
 static void agregar_fd_a_epoll(int epoll_fd, int fd, FdTipo tipo);
@@ -55,9 +27,28 @@ static void aceptar_clientes(int epollFd, int escuhaFd, FdTipo tipoCliente);
 static void manejar_linea_completa(ServerState* state, FdInfo* info, const char* linea);
 static void procesar_lineas(ServerState* state, FdInfo* info);
 static void manejar_lectura_cliente(ServerState* state, FdInfo* info);
-static void enviar(int epoll_fd, FdInfo* info, const char* msg);
+void enviar(int epoll_fd, FdInfo* info, const char* msg);
+static int enviar_fd(int fd, const char *mensaje);
 static void manejar_escritura_cliente(int epoll_fd, FdInfo* info);
 /*==================================================Implementaciones ===========================================*/
+
+static const char* obtener_recurso(int intRecurso){
+    switch (intRecurso)
+    {
+    case 0:
+        return "cpu";
+        break;
+    case 1:
+        return "gpu";
+        break;
+    case 2:
+        return "mem";
+        break;
+    default:
+        return "__";
+        break;
+    }
+}
 /*Toma un file descriptor (socket) y lo setea a modo no bloqueante*/
 static int set_nobloqueante(int fd){
     /*F_GETFL (void)
@@ -190,7 +181,7 @@ static void agregar_fd_a_epoll(int epoll_fd, int fd, FdTipo tipo){
 }
 
 static void cerrar_conexion(int epoll_fd, FdInfo* info){
-    printf("[INFO]>> Cerrando conexion fd= %d...\n", info->fd);
+    printf("[INFO] Cerrando conexion fd= %d...\n", info->fd);
 
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, info->fd, NULL);
     close(info->fd);
@@ -251,7 +242,7 @@ static void aceptar_clientes(int epollFd, int escuhaFd, FdTipo tipoCliente){
         char ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &cliente_addr.sin_addr,ip, sizeof(ip));
 
-        printf("[INFO]>> Conección aceptada fd=%d de %s:%d\n",
+        printf("[INFO] Conección aceptada fd=%d de %s:%d\n",
         cliente_fd,
         ip,
         ntohs(cliente_addr.sin_port));
@@ -271,7 +262,7 @@ static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
 
         /*Como cada fd tiene asosiado un buffer de lectura chequeamos que no este lleno*/
         if(info->read_len >= READ_BUFFER_SIZE){
-            printf("[ERROR]>> buffer de lectura de fd:<%d> lleno", info->fd);
+            printf("[ERROR] buffer de lectura de fd:<%d> lleno", info->fd);
             cerrar_conexion(state->epoll_fd, info);
             return;
         }
@@ -358,20 +349,56 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
     if(sscanf(linea, "%31s %31s %31s %31s",cmd, job_id, resource, cantidad) == 4){
 
         if(strncmp(cmd,"RESERVE", 7) == 0){
-            printf("[INFO]>> RESERVE job_id:<%s> resourse:<%s> amount:<%s>\n",
+            printf("[INFO] RESERVE job_id:<%s> resourse:<%s> amount:<%s>\n",
             job_id, resource, cantidad);
             
-            //handler_reserve(state->rm,info->fd, char* string_id, char* string_recurso, char* string_cantidad)
+            int res = handler_reserve(state->rm,info->fd, job_id, resource, cantidad);
             
-            enviar(state->epoll_fd, info, "GRANTED\n");
+            if(res == 1){
+                printf("[INFO] GRANTED job_id:<%s> resourse:<%s> amount:<%s>\n",
+                    job_id, resource, cantidad);
+                enviar(state->epoll_fd, info, "GRANTED\n");
+            }
+            else if(res == 0){
+                printf("[INFO] QUEUED job_id:<%s> resourse:<%s> amount:<%s>\n",
+                    job_id, resource, cantidad);
+                enviar(state->epoll_fd, info, "QUEUED\n");
+            }
+            else
+                enviar(state->epoll_fd, info, "ERROR\n");
+                
             return;
         }
 
         if(strncmp(cmd,"RELEASE", 7) == 0){
-            printf("[INFO]>> RELEASE job_id:<%s> resourse:<%s> amount:<%s\n",
+            printf("[INFO] RELEASE job_id:<%s> resourse:<%s> amount:<%s>\n",
             job_id, resource, cantidad);
             
-            enviar(state->epoll_fd, info, "OK\n");
+            Notificacion notificaciones[MAX_NOTIFICACIONES];
+            int cant_notificaciones = 0;
+            
+            int res = handler_release(state->rm, info->fd, job_id, resource, cantidad, 
+                                        notificaciones, &cant_notificaciones,MAX_NOTIFICACIONES );
+
+            if(res == 0){
+                printf("[INFO] RELEASE OK job_id:<%s> \n",job_id);
+                enviar(state->epoll_fd, info, "OK\n");
+
+                for(int i = 0; i < cant_notificaciones; i++){
+                    char respuesta[128];
+
+                    snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
+                    notificaciones[i].job_id, 
+                    obtener_recurso(notificaciones[i].recurso),
+                    notificaciones[i].cantidad);
+
+                    enviar_fd(notificaciones[i].socket, respuesta);
+                }
+                    
+            }        
+            else{
+                enviar(state->epoll_fd,info, "ERROR\n");
+            }                    
             return;
         }
 
@@ -384,14 +411,24 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
         return;
     }
 
-    enviar(state->epoll_fd, info, "[ERROR]>> comando desconocido\n");
+    enviar(state->epoll_fd, info, "[ERROR] comando desconocido\n");
     
     
 }
 
+static int enviar_fd(int fd, const char *mensaje) {
+    ssize_t n = send(fd, mensaje, strlen(mensaje), 0);
+
+    if (n < 0) {
+        perror("send");
+        return -1;
+    }
+
+    return 0;
+}
 
 /*Guarda un mensaje en el buffer y activa EPOLLOUT*/
-static void enviar(int epoll_fd, FdInfo* info, const char* msg){
+void enviar(int epoll_fd, FdInfo* info, const char* msg){
     size_t msg_len = strlen(msg);
 
     if(info->write_len + msg_len >= WRITE_BUFFER_SIZE){
@@ -455,6 +492,7 @@ static void actualizar_eventos_epoll(int epoll_fd, FdInfo* info, uint16_t events
 void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
 
 
+    //INADDR_ANY
     int escucha_publica = crear_socket_escucha("0.0.0.0", puerto_publico);
     int escucha_local = crear_socket_escucha("127.0.0.1", puerto_local);
 
@@ -462,7 +500,7 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
 
     ServerState state;
     state.epoll_fd = epoll_fd;
-    state.resource_manager = rm;
+    state.rm = rm;
 
     if(epoll_fd == -1){
         perror("epoll_create1");
@@ -510,19 +548,4 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
     close(escucha_publica);
     close(epoll_fd);
     return;
-}
-
-int main(int argc, char* argv[]){
-
-    if(argc!=3){
-        fprintf(stderr, "Uso: %s <puerto_publico> <puerto_local>\n",argv[0]);
-        return EXIT_FAILURE;
-    }
-
-    int puerto_publico= atoi(argv[1]);
-    int puerto_local = atoi(argv[2]);
-
-    server_run( puerto_publico, puerto_local, NULL);
-    
-    return EXIT_SUCCESS;
 }

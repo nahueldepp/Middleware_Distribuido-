@@ -4,22 +4,22 @@
 
 #include "resource_manager.h"
 
-int parsear_recurso(char* recurso){
+static int parsear_recurso(char* recurso){
     if(strcmp(recurso, "cpu") == 0) return 0;
     if(strcmp(recurso, "gpu") == 0) return 1;
     if(strcmp(recurso, "mem") == 0) return 2;
     return -1;
 }
 
-void sumar_recurso(ResourceManager * rm, int rec, int cantidad){
+static void sumar_recurso(ResourceManager * rm, int rec, int cantidad){
     if (rec == 0) rm->cpu->disponible += cantidad;
     else if (rec == 0) rm->gpu->disponible += cantidad;
     else  rm->mem->disponible += cantidad;
 }
 
-unsigned int funcion_hash(unsigned int id, int socket, unsigned int capacidad) { return (id + socket) % capacidad; }
+static unsigned int funcion_hash(unsigned int id, int socket, unsigned int capacidad) { return (id + socket) % capacidad; }
 
-struct hash_activos * hash_init(int t){
+static struct hash_activos * hash_init(int t){
     struct hash_activos * tabla_hash = malloc(sizeof(struct hash_activos));
     tabla_hash->capacidad = t;
     tabla_hash->tabla = calloc(t, sizeof(struct job_activo *));
@@ -41,7 +41,7 @@ void resources_init(ResourceManager * rm, int cant_cpu, int cant_gpu, int cant_m
     rm->mem->primero = rm->mem->ultimo = NULL;
 }
 
-void encolar(recurso r, unsigned int id, int socket, unsigned int rec_solicitado, unsigned int cantidad){
+static void encolar(recurso r, unsigned int id, int socket, unsigned int rec_solicitado, unsigned int cantidad){
     struct job_pendiente * nuevo_nodo = malloc(sizeof(struct job_pendiente));
     nuevo_nodo->id = id;
     nuevo_nodo->socket = socket;
@@ -56,7 +56,7 @@ void encolar(recurso r, unsigned int id, int socket, unsigned int rec_solicitado
     }
 }
 
-int desencolar(recurso r){
+static int desencolar(recurso r){
     if (r->primero == NULL) return -1;
     else {
         struct job_pendiente* a_borrar = r->primero;
@@ -67,7 +67,7 @@ int desencolar(recurso r){
     }
 }
 
-struct job_activo * hash_buscar(struct hash_activos * tabla, unsigned int id, int socket){
+static struct job_activo * hash_buscar(struct hash_activos * tabla, unsigned int id, int socket){
     unsigned int i = funcion_hash(id, socket, tabla->capacidad);
     struct job_activo * actual = tabla->tabla[i];
     while (actual != NULL){
@@ -79,7 +79,7 @@ struct job_activo * hash_buscar(struct hash_activos * tabla, unsigned int id, in
     return NULL;
 }
 
-void hash_insertar(struct hash_activos * tabla, int id, int socket, int tipo_recurso, int cantidad){
+static void hash_insertar(struct hash_activos * tabla, int id, int socket, int tipo_recurso, int cantidad){
     struct job_activo * job = hash_buscar(tabla, id, socket);
 
     if (job == NULL){ // si el nodo no existe en la tabla, reservo memoria para el nodo y lo inicializo en 0
@@ -100,7 +100,7 @@ void hash_insertar(struct hash_activos * tabla, int id, int socket, int tipo_rec
 // devuelve 1 si el trabajo fue concedido, 0 si fue encolado y -1 en caso de error
 int handler_reserve(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad){
     int id = atoi(string_id);
-    int cantidad = atoi(string_cantidad);
+    unsigned cantidad = atoi(string_cantidad);
     int rec = parsear_recurso(string_recurso);
 
     recurso r = NULL;
@@ -124,9 +124,9 @@ int handler_reserve(ResourceManager * rm, int socket, char* string_id, char* str
 }
 
 // devuelve 0 en caso de tener exito y -1 en caso de error
-int handler_release(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad, int* sockets_a_notificar, int* id_a_notificar, int* cant_n, int cant_max){
-    int id = atoi(string_id);
-    int cantidad = atoi(string_cantidad);
+int handler_release(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad,Notificacion* notificaciones, int* cant_notificaciones, int cant_max){
+    unsigned int id = atoi(string_id);
+    unsigned int cantidad = atoi(string_cantidad);
     int rec = parsear_recurso(string_recurso);
 
     int i = funcion_hash(id, socket, rm->activos->capacidad);
@@ -136,12 +136,11 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
 
     else if (job->socket == socket && job->id == id){
         if (rec == -1){ printf("Error: recurso incorrecto\n"); return -1; }
-        else if (rec == 0) job->cpu_asignado -= cantidad;
-        else if (rec == 1) job->gpu_asignado -= cantidad;
-        else if (rec == 2) job->mem_asignado -= cantidad;
+        else if (rec == 0){ if(job->cpu_asignado < cantidad) return -1; job->cpu_asignado -= cantidad;}
+        else if (rec == 1){if(job->gpu_asignado < cantidad) return -1; job->gpu_asignado -= cantidad;}
+        else if (rec == 2){if(job->mem_asignado < cantidad) return -1; job->mem_asignado -= cantidad;}
 
         sumar_recurso(rm, rec, cantidad);
-
         if (job->cpu_asignado == 0 && job->gpu_asignado == 0 && job->mem_asignado == 0){
             rm->activos->tabla[i] = job->siguiente;
             free(job);
@@ -160,10 +159,11 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
         if (actual == NULL) { printf("Error: JOB inexistente\n"); return -1;}
 
         if (rec == -1){ printf("Error: recurso incorrecto\n"); return -1; }
-        else if (rec == 0) actual->cpu_asignado -= cantidad;
-        else if (rec == 1) actual->gpu_asignado -= cantidad;
-        else if (rec == 2) actual->mem_asignado -= cantidad;
-
+        else if (rec == 0){ if(job->cpu_asignado < cantidad) return -1; job->cpu_asignado -= cantidad;}
+        else if (rec == 1){if(job->gpu_asignado < cantidad) return -1; job->gpu_asignado -= cantidad;}
+        else if (rec == 2){if(job->mem_asignado < cantidad) return -1; job->mem_asignado -= cantidad;}
+        //agrego suma de recurso en esta rama
+        sumar_recurso(rm, rec, cantidad);
         if (actual->cpu_asignado == 0 && actual->gpu_asignado == 0 && actual->mem_asignado == 0){
             anterior->siguiente = actual->siguiente;
             free(actual);
@@ -175,7 +175,7 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
     else if (rec == 1) r = rm->gpu;
     else if (rec == 2) r = rm->mem;
 
-    while (r != NULL && r->primero != NULL && r->disponible >= r->primero->cantidad && *cant_n < cant_max){
+    while (r != NULL && r->primero != NULL && r->disponible >= r->primero->cantidad && *cant_notificaciones < cant_max){
         int id_pendiente = r->primero->id;
         int socket_pendiente = r->primero->socket;
         int cantidad_pendiente = r->primero->cantidad;
@@ -184,9 +184,11 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
         r->disponible -= cantidad_pendiente;
         hash_insertar(rm->activos, id_pendiente, socket_pendiente, rec, cantidad_pendiente);
 
-        sockets_a_notificar[*cant_n] = socket_pendiente;
-        id_a_notificar[*cant_n] = id_pendiente;
-        (*cant_n)++;
+        notificaciones[*cant_notificaciones].socket = socket_pendiente;
+        notificaciones[*cant_notificaciones].job_id = id_pendiente;
+        notificaciones[*cant_notificaciones].recurso = rec;
+        notificaciones[*cant_notificaciones].cantidad = cantidad_pendiente;
+        (*cant_notificaciones)++;
     }
     return 0;
 }
