@@ -760,11 +760,17 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
                 }
             }
             else if(info->type == FD_AGENTE_ERLANG || info->type == FD_AGENTE_REMOTO){
-                if(eventos[i].events == EPOLLIN){
+                //events puede tener varios flags juntos, asiq que usamos &
+                if(eventos[i].events & EPOLLIN){
                     manejar_lectura_cliente(&state, info);
                 }
-                if (eventos[i].events == EPOLLOUT) {
+                if (eventos[i].events & EPOLLOUT) {
                     manejar_escritura_cliente(&state, info);
+                }
+                if (eventos[i].events & (EPOLLHUP | EPOLLERR)) {
+                    handler_disconnect(state.rm, info->fd);
+                    cerrar_conexion(state.epoll_fd, info);
+                    continue;
                 }
             }
         }
