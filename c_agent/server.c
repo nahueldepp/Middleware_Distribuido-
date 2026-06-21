@@ -14,9 +14,14 @@
 
 #include "server.h"
 
+
+
+
+
 #define READ_BUFFER_SIZE 4096
 #define WRITE_BUFFER_SIZE 4096
 #define MAX_EVENTS 64
+#define MAX_NOTIFICACIONES 67
 #define MAX_NODOS 32
 
 typedef enum {
@@ -55,6 +60,11 @@ typedef struct {
     size_t write_sent;
 } FdInfo;
 
+typedef struct {
+    int epoll_fd;
+    ResourceManager *rm;
+} ServerState;
+
 
 /*Prototipos*/
 static const char* obtener_recurso(int intRecurso);
@@ -70,7 +80,7 @@ static void procesar_lineas(ServerState* state, FdInfo* info);
 static void manejar_lectura_cliente(ServerState* state, FdInfo* info);
 void enviar(int epoll_fd, FdInfo* info, const char* msg);
 static int enviar_fd(int fd, const char *mensaje);
-static void manejar_escritura_cliente(int epoll_fd, FdInfo* info);
+static void manejar_escritura_cliente(ServerState* state, FdInfo* info);
 static int crear_socket_udp_broadcast(int puerto);
 static void enviar_anuncio_presence(int udp_fd, int puerto_publico);
 static void limpiar_nodos_expirados();
@@ -310,6 +320,7 @@ static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
         /*Como cada fd tiene asosiado un buffer de lectura chequeamos que no este lleno*/
         if(info->read_len >= READ_BUFFER_SIZE){
             printf("[ERROR] buffer de lectura de fd:<%d> lleno", info->fd);
+            handler_disconnect(state->rm, state->epoll_fd);
             cerrar_conexion(state->epoll_fd, info);
             return;
         }
@@ -323,12 +334,14 @@ static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
                 break;
             }
             perror("read");
+            handler_disconnect(state->epoll_fd, state->epoll_fd);
             cerrar_conexion(state->epoll_fd, info);
             return; 
         }
         
         if(n == 0){
             printf("[INFO]>> Cliente desconectado fd=%d\n", info->fd);
+            handler_disconnect(state->rm, state->epoll_fd);
             cerrar_conexion(state->epoll_fd, info);
             return;
         }
@@ -522,7 +535,7 @@ void enviar(int epoll_fd, FdInfo* info, const char* msg){
     actualizar_eventos_epoll(epoll_fd, info, EPOLLIN | EPOLLOUT);
 }
 
-static void manejar_escritura_cliente(int epoll_fd, FdInfo* info){
+static void manejar_escritura_cliente(ServerState* state, FdInfo* info){
     //mientras haya bytes para enviar
     while(info->write_sent < info->write_len){
         ssize_t n = write(info->fd,
@@ -536,7 +549,8 @@ static void manejar_escritura_cliente(int epoll_fd, FdInfo* info){
             }
 
             perror("write");
-            cerrar_conexion(epoll_fd, info);
+            handler_disconnect(state->rm,state->epoll_fd);
+            cerrar_conexion(state->epoll_fd, info);
             return;
         }
         info->write_sent += (size_t)n;
@@ -547,7 +561,7 @@ static void manejar_escritura_cliente(int epoll_fd, FdInfo* info){
     info->write_sent = 0;
 
     //una vez escrito el mensaje, prestamos atención solo a los eventos de entrada
-    actualizar_eventos_epoll(epoll_fd, info, EPOLLIN);
+    actualizar_eventos_epoll(state->epoll_fd, info, EPOLLIN);
 
 }
 
@@ -750,7 +764,7 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
                     manejar_lectura_cliente(&state, info);
                 }
                 if (eventos[i].events == EPOLLOUT) {
-                    manejar_escritura_cliente(state.epoll_fd, info);
+                    manejar_escritura_cliente(&state, info);
                 }
             }
         }
