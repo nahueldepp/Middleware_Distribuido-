@@ -44,6 +44,7 @@ iniciar_normal(PuertoC) ->
 %% nodos. Todo el resto (conexión, GET NODES, parseo, orden, bucle) es
 %% idéntico para ambos modos, así que se comparte acá.
 arrancar(PuertoC, Modo) ->
+    catch register(scheduler, self()),
     io:format("Scheduler: Arrancando y buscando al agente C...~n"),
 
     %% Iniciamos el cliente TCP.
