@@ -26,7 +26,7 @@ echo -e "[TEST] Lanzando Nodo B en puerto público 8200 (2 CPUs, 4GB RAM, 2 GPU)
 PID_B=$!
 
 # Esperamos a que los agentes se descubran por UDP
-sleep 4
+sleep 6
 
 echo -e "${GREEN}[TEST] Ambos agentes levantados y descubiertos por UDP broadcast.${NC}"
 echo -e "[TEST] PIDs registrados -> Nodo A: $PID_A | Nodo B: $PID_B"
