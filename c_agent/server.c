@@ -780,7 +780,7 @@ static void enviar_anuncio_presence(int udp_fd, int puerto_publico, ResourceMana
     struct sockaddr_in bc_addr;
     memset(&bc_addr, 0, sizeof(bc_addr));
     bc_addr.sin_family = AF_INET;
-    bc_addr.sin_port = htons(8888); 
+    bc_addr.sin_port = htons(12529); 
     bc_addr.sin_addr.s_addr = inet_addr("255.255.255.255");
 
     char mensaje[256];
@@ -860,7 +860,7 @@ static void manejar_lectura_udp(int udp_fd) {
 void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
     int escucha_publica = crear_socket_escucha("0.0.0.0", puerto_publico);
     int escucha_local = crear_socket_escucha("127.0.0.1", puerto_local);
-    int udp_fd = crear_socket_udp_broadcast(8888);
+    int udp_fd = crear_socket_udp_broadcast(12529);
 
     int epoll_fd = epoll_create1(0);
 
