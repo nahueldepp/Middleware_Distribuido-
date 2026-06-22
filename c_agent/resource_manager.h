@@ -55,4 +55,6 @@ void remover_de_cola_pendiente_por_id(recurso r, unsigned int id);
 
 void handler_disconnect(ResourceManager * rm, int socket, Notificacion* notificaciones, int* cant_notificaciones, int cant_max);
 
+void resources_destroy(ResourceManager * rm);
+
 #endif

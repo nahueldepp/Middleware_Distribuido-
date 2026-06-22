@@ -55,7 +55,7 @@ int resources_init(ResourceManager * rm, unsigned int cant_cpu, unsigned int can
 static void encolar(recurso r, unsigned int id, int socket, unsigned int rec_solicitado, unsigned int cantidad){
     struct job_pendiente * nuevo_nodo = malloc(sizeof(struct job_pendiente));
 
-    if (nuevo_nodo == NULL) return NULL;
+    if (nuevo_nodo == NULL) return;
 
     nuevo_nodo->id = id;
     nuevo_nodo->socket = socket;
@@ -372,4 +372,22 @@ void handler_disconnect(ResourceManager * rm, int socket, Notificacion* notifica
             (*cant_notificaciones)++;
         }
     }
+}
+
+// funcion que libera la memoria reservada del resource manager
+void resources_destroy(ResourceManager * rm){
+    recurso recursos_a_liberar[3] = {rm->cpu, rm->gpu, rm->mem};
+
+    for (int j = 0; j < 3; j++){
+        recurso r = recursos_a_liberar[j];
+        struct job_pendiente * actual = r->primero;
+        while (actual != NULL){
+            struct job_pendiente * a_liberar = actual;
+            actual = actual->siguiente;
+            free(a_liberar);
+        }
+        free(r);
+    }
+
+    free(rm);
 }
