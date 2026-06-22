@@ -13,13 +13,13 @@ echo -e "[TEST] Limpiando procesos de agentes anteriores..."
 killall agent 2>/dev/null
 sleep 1
 
-# 2. Levantar Nodo A (§6 del enunciado)
+# 2. Levantar Nodo A
 # Configuración: Puerto Público=8100, Puerto Local=9100, CPUs=2, Memoria=8, GPUs=0
 echo -e "[TEST] Lanzando Nodo A en puerto público 8100 (2 CPUs, 8GB RAM, 0 GPU)..."
 ./agent 8100 9100 2 8 0 > /dev/null 2>&1 &
 PID_A=$!
 
-# 3. Levantar Nodo B (§6 del enunciado)
+# 3. Levantar Nodo B
 # Configuración: Puerto Público=8200, Puerto Local=9200, CPUs=2, Memoria=4, GPUs=1
 echo -e "[TEST] Lanzando Nodo B en puerto público 8200 (2 CPUs, 4GB RAM, 1 GPU)..."
 ./agent 8200 9200 2 4 1 > /dev/null 2>&1 &

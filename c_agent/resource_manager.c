@@ -216,8 +216,7 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
         free(actual);
     }
 
-    // MODIFICACIÓN CRÍTICA: Al poder liberarse todo junto, tenemos que iterar y revisar 
-    // las colas de solicitudes de los 3 recursos (0=cpu, 1=gpu, 2=mem)
+    // Revisa secuencialmente las 3 colas de recursos para activar los jobs pendientes.
     recurso recursos_a_revisar[3] = {rm->cpu, rm->gpu, rm->mem};
 
     for (int j = 0; j < 3; j++) {
@@ -273,6 +272,8 @@ void limpiar_cola(recurso r, int socket){
     }
 }
 
+// remover_de_cola_pendiente_por_id: Quita un job de la cola FIFO usando su id
+// Se usa como rollback inmediato si una reserva distribuida falla en otro nodo
 void remover_de_cola_pendiente_por_id(recurso r, unsigned int id) {
     if (r == NULL || r->primero == NULL) return;
     

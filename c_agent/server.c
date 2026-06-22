@@ -16,6 +16,7 @@
 
 #define MAX_NODOS 32
 
+// Estructura para registrar los atributos y la última actividad de los nodos vecinos
 typedef struct {
     char ip[INET_ADDRSTRLEN];
     int puerto;
@@ -26,7 +27,7 @@ typedef struct {
 NodoVecino tabla_nodos[MAX_NODOS];
 int cantidad_nodos = 0;
 
-/*Prototipos*/
+/* Prototipos de funciones internas */
 static const char* obtener_recurso(int intRecurso);
 static int set_nobloqueante(int fd);
 static int crear_socket_escucha(const char* ip, int port);
@@ -45,8 +46,8 @@ static int crear_socket_udp_broadcast(int puerto);
 static void enviar_anuncio_presence(int udp_fd, int puerto_publico, ResourceManager *rm);
 static void limpiar_nodos_expirados();
 static void manejar_lectura_udp(int udp_fd);
-/*==================================================Implementaciones ===========================================*/
 
+// Retorna la representación en texto del índice numérico de un recurso
 static const char* obtener_recurso(int intRecurso){
     switch (intRecurso)
     {
@@ -85,7 +86,7 @@ static int set_nobloqueante(int fd){
     return 0; 
 }
 
-
+// Inicializa un socket TCP pasivo, configura la reutilización de puertos y lo pone a escuchar
 static int crear_socket_escucha(const char* ip, int port){
     /*Creo socket TCP*/
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -96,15 +97,8 @@ static int crear_socket_escucha(const char* ip, int port){
     }
 
     int opt = 1;
-    /*
-    Manipulate options for the socket referred to by the file descriptor sockfd.
-    To manipulate options  at  the  sockets  API  level,
-    level  is specified as SOL_SOCKET.
-    SO_REUSEADDR: Permite reutilizar una dirección 
-    y puerto locales inmediatamente después de cerrar un servidor,
-    evitando el error "Address already in use" (Dirección ya en uso)
-    Basicamente seteamos el socket para que cuando se cierre un servidor reusar la direccion y su puerto
-    */
+    // SO_REUSEADDR: Permite reutilizar la dirección y el puerto local inmediatamente 
+    // tras cerrar el proceso, evitando el error "Address already in use"
     if(setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) == -1){
         perror("setsocket");
         exit(EXIT_FAILURE);
@@ -122,25 +116,14 @@ static int crear_socket_escucha(const char* ip, int port){
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
 
-    /*This  function converts the character string src into a network address structure in the af address family, 
-    then copies the network address structure to dst.  The af argu‐
-    ment must be either AF_INET or AF_INET6.  dst is written in network byte order.
-    Convierte ip(el string del puerto) en una estructura de direccion de red en la familia AF_INET
-    */
-
+    // Convierte la dirección IP en formato string a una estructura de red binaria
     if(inet_pton(AF_INET, ip, &addr.sin_addr) <= 0){
         perror("inet_pton");
         close(fd);
         exit(EXIT_FAILURE);
     }
 
-    /*Asignamos un nobre al socket 
-    When a socket is created with socket(2), it exists in a name space (address family)
-    but has no address assigned to it.  bind() assigns the address specified by addr to the
-    socket  referred  to  by  the file descriptor sockfd.  addrlen specifies the size, in bytes,
-    of the address structure pointed to by addr.  Traditionally, this operation is
-    called “assigning a name to a socket”.*/
-
+    // Vincula y asigna de forma física la dirección de red y el puerto al socket
     if(bind(fd, (struct sockaddr*) &addr, sizeof(addr) ) == -1){
         perror("bind");
         close(fd);
@@ -148,10 +131,7 @@ static int crear_socket_escucha(const char* ip, int port){
     }
 
 
-    /*Lo ponemos a escuchar
-    SOMAXCONN indica al sistema operativo que permita 
-    la longitud máxima posible en la cola de conexiones pendientes (backlog), 
-    optimizando el rendimiento bajo alta concurrencia.*/
+    // Configura la longitud máxima de conexiones pendientes (SOMAXCONN) para alta concurrencia
     if(listen(fd, SOMAXCONN) == -1){
         perror("listen");
         exit(EXIT_FAILURE);
@@ -223,6 +203,7 @@ static const char* fd_tipo(FdTipo tipo){
     }
 }
 
+// Acepta ráfagas de conexiones entrantes de forma no bloqueante y las registra en epoll
 static void aceptar_clientes(int epollFd, int escuhaFd, FdTipo tipoCliente){
 
     while(1){
@@ -233,11 +214,7 @@ static void aceptar_clientes(int epollFd, int escuhaFd, FdTipo tipoCliente){
         int cliente_fd = accept(escuhaFd, (struct sockaddr *)&cliente_addr, &cliente_len);
 
         if(cliente_fd == -1){
-            /*
-             On error, -1 is returned, errno is set to indicate the error, and
-            addrlen is left unchanged.  
-            EAGAIN or EWOULDBLOCK
-              The  socket is marked nonblocking and no connections are present to be accepted.*/
+            // EAGAIN/EWOULDBLOCK indica que el socket no bloqueante ya no tiene conexiones pendientes por aceptar
             if(errno == EAGAIN || errno ==  EWOULDBLOCK){
                 break;
             }
@@ -253,9 +230,8 @@ static void aceptar_clientes(int epollFd, int escuhaFd, FdTipo tipoCliente){
             continue;
         }
 
-        /* Esta función convierte la estructura de dirección de red `src` de la familia de direcciones `af` en una cadena de caracteres.
-        La cadena resultante se copia al búfer al que apunta `dst`.
-         */
+        // Esta función convierte la estructura de dirección de red `src` de la familia de direcciones `af` en una cadena de caracteres
+        // La cadena resultante se copia al búfer al que apunta `dst`
         char ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &cliente_addr.sin_addr,ip, sizeof(ip));
 
@@ -268,7 +244,7 @@ static void aceptar_clientes(int epollFd, int escuhaFd, FdTipo tipoCliente){
     }
 }
 
-
+// Lee los buffers de red y gestiona la desconexión o fallas críticas de los descriptores
 static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
 
     while(1){
@@ -278,7 +254,7 @@ static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
         if(info->read_len >= READ_BUFFER_SIZE){
             printf("[ERROR] buffer de lectura de fd:<%d> lleno\n", info->fd);
             
-            // NUEVO: Declaramos buffers de notificación para cumplir la nueva firma
+            // Declaramos buffers de notificación para cumplir la nueva firma
             Notificacion notificaciones[MAX_NOTIFICACIONES];
             int cant_notificaciones = 0;
             handler_disconnect(state->rm, info->fd, notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
@@ -307,7 +283,7 @@ static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
             }
             perror("read");
             
-            // NUEVO: Manejo de notificaciones en error de lectura
+            // Manejo de notificaciones en error de lectura
             Notificacion notificaciones[MAX_NOTIFICACIONES];
             int cant_notificaciones = 0;
             handler_disconnect(state->rm, info->fd, notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
@@ -326,7 +302,7 @@ static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
         if(n == 0){
             printf("[INFO]>> Cliente desconectado fd=%d\n", info->fd);
             
-            // NUEVO: Manejo de notificaciones en desconexión limpia
+            // Manejo de notificaciones en desconexión limpia
             Notificacion notificaciones[MAX_NOTIFICACIONES];
             int cant_notificaciones = 0;
             handler_disconnect(state->rm, info->fd, notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
@@ -347,6 +323,7 @@ static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
     }
 }
 
+// Trocea el flujo continuo de bytes buscando caracteres '\n' para extraer líneas completas
 static void procesar_lineas(ServerState* state, FdInfo* info){
     /* queremos determinar el largo de la ultima linea completa del tipo 
     COMANDO job_id resourse amount*/
@@ -388,9 +365,7 @@ static void procesar_lineas(ServerState* state, FdInfo* info){
     }
 }
 
-
-/*Una vez procesadas las lineas leidas procesar_lineas(), manejar_linea_completa() se encarga
-de parsear el comando dado*/
+// Una vez procesadas las lineas leidas procesar_lineas(), manejar_linea_completa() se encarga de parsear el comando dado
 static void manejar_linea_completa(ServerState* state, FdInfo* info, const char* linea){
 
     char cmd[32];
@@ -400,6 +375,7 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
 
     printf("[LINE fd:<%d> tipo:<%s>] %s\n", info->fd,fd_tipo(info->type), linea);
 
+    // Comando GET NODES: Devuelve el listado de nodos vecinos activos formateado para erlang
     if (strncmp(linea, "GET NODES", 9) == 0) {
         limpiar_nodos_expirados();
 
@@ -456,6 +432,7 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
             return;
         }
 
+        // Comando RELEASE: Libera una cantidad de hardware y despacha notificaciones pendientes
         if(strncmp(cmd,"RELEASE", 7) == 0){
             printf("[INFO] RELEASE job_id:<%s> resourse:<%s> amount:<%s>\n",
             job_id, resource, cantidad);
@@ -497,7 +474,7 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
         return;
     }
 
-    // 1. Manejo de JOB_REQUEST Distribuido (Opción A: IP+Puerto con Ruteo Real)
+    // Comando JOB_REQUEST: atiende la petición compuesta de erlang local aplicando ruteo real
     if (strncmp(linea, "JOB_REQUEST", 11) == 0) {
         int req_id;
         if (sscanf(linea, "JOB_REQUEST %d", &req_id) == 1) {
@@ -517,7 +494,7 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                     char recurso[32] = {0};
                     int cant = 0;
                     
-                    // Parseamos siguiendo la Opción A: @IP:PUERTO:RECURSO:CANTIDAD
+                    // Descompone el fragmento de recurso distribuido (@IP:PUERTO:RECURSO:CANTIDAD)
                     if (sscanf(token + 1, "%63[^:]:%d:%31[^:]:%d", ip, &puerto_req, recurso, &cant) == 4) {
                         
                         // Es local si el puerto del fragmento coincide con nuestro propio puerto_local
@@ -529,11 +506,11 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                             int res = handler_reserve(state->rm, info->fd, str_id, recurso, str_cant);
                             if (res != 1) { 
                                 // Si da 0 se encoló (QUEUED), pero para un JOB_REQUEST compuesto, 
-                                // si no se concede todo en el momento, lo consideramos fallo para hacer rollback.
+                                // si no se concede todo en el momento, lo consideramos fallo para hacer rollback
                                 todos_concedidos = 0;
                             }
                         } else {
-                            // RUTEO REAL: Buscamos el vecino exactO por el puerto que nos dio Erlang
+                            // Ruteo hacia un nodo remoto: Abre un socket TCP y delega un RESERVE clásico
                             int puerto_remoto = -1;
                             for (int i = 0; i < cantidad_nodos; i++) {
                                 if (tabla_nodos[i].puerto == puerto_req) {
@@ -583,7 +560,7 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
             if (todos_concedidos) {
                 snprintf(buffer_respuesta, sizeof(buffer_respuesta), "JOB_GRANTED %d\n", req_id);
             } else {
-                // --- ROLLBACK REAL (Local): Deshacemos reservas y limpiamos colas si falló algo ---
+                // Mecanismo de Rollback: Libera reservas parciales o quita de colas locales si la petición falló
                 snprintf(linea_copy, sizeof(linea_copy), "%s", linea);
                 token = strtok(linea_copy, " ");
                 token = strtok(NULL, " ");
@@ -600,7 +577,7 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                                 // Intentamos liberarlo de activos si llegó a entrar
                                 int rel_res = handler_release(state->rm, info->fd, str_id, recurso, str_cant, notifs, &c_notif, MAX_NOTIFICACIONES);
                                 
-                                // Si no estaba activo, es porque quedó atrapado en la cola de pendientes. ¡Lo removemos para evitar corrupción!
+                                // Si no estaba activo, remueve el Job de las colas enlazadas por punteros para evitar deadlocks
                                 if (rel_res != 0) {
                                     if (strcmp(recurso, "cpu") == 0) remover_de_cola_pendiente_por_id(state->rm->cpu, req_id);
                                     else if (strcmp(recurso, "gpu") == 0) remover_de_cola_pendiente_por_id(state->rm->gpu, req_id);
@@ -618,7 +595,7 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
         }
     }
     
-    // 2. Manejo de JOB_RELEASE Dinámico (Sin Hardcodeos)
+    // Comando JOB_RELEASE: Deshace todas las asignaciones de un Job en el nodo y replica a los vecinos
     if (strncmp(linea, "JOB_RELEASE", 11) == 0) {
         int req_id;
         if (sscanf(linea, "JOB_RELEASE %d", &req_id) == 1) {
@@ -652,8 +629,6 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                 
                 if (connect(rem_fd, (struct sockaddr*)&rem_addr, sizeof(rem_addr)) == 0) {
                     char cmd_release_vecino[256];
-                    // Mandamos un RELEASE genérico para que el vecino limpie lo que tenga de este id
-                    // Como el vecino usa el `handler_release_dinamico_remoto` o sabe buscar por id, lo procesará bien.
                     snprintf(cmd_release_vecino, sizeof(cmd_release_vecino), "RELEASE %d todo 0\n", req_id); 
                     send(rem_fd, cmd_release_vecino, strlen(cmd_release_vecino), 0);
                     close(rem_fd);
@@ -666,7 +641,8 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
         }
     }
 
-    // 3. Manejo de JOB_STATUS
+    // Comando JOB_STATUS: Responde afirmativamente de forma directa para confirmar al planificador
+    // distribuido que el Job consultado se encuentra activo
     if (strncmp(linea, "JOB_STATUS", 10) == 0) {
         int req_id;
         if (sscanf(linea, "JOB_STATUS %d", &req_id) == 1) {
@@ -682,6 +658,7 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
     
 }
 
+// Realiza un envío síncrono y directo a través de un descriptor específico
 static int enviar_fd(int fd, const char *mensaje) {
     ssize_t n = send(fd, mensaje, strlen(mensaje), 0);
 
@@ -693,7 +670,7 @@ static int enviar_fd(int fd, const char *mensaje) {
     return 0;
 }
 
-/*Guarda un mensaje en el buffer y activa EPOLLOUT*/
+// Acumula datos en el buffer de salida del cliente y activa EPOLLOUT para escritura asíncrona
 void enviar(int epoll_fd, FdInfo* info, const char* msg){
     size_t msg_len = strlen(msg);
 
@@ -710,6 +687,7 @@ void enviar(int epoll_fd, FdInfo* info, const char* msg){
     actualizar_eventos_epoll(epoll_fd, info, EPOLLIN | EPOLLOUT);
 }
 
+// Vacía de forma no bloqueante el buffer de salida hacia el socket del cliente
 static void manejar_escritura_cliente(ServerState* state, FdInfo* info){
     while(info->write_sent < info->write_len){
         ssize_t n = write(info->fd,
@@ -747,7 +725,7 @@ static void manejar_escritura_cliente(ServerState* state, FdInfo* info){
     actualizar_eventos_epoll(state->epoll_fd, info, EPOLLIN);
 }
 
-/**/
+// Modifica la máscara de eventos (intereses) de un descriptor dentro de epoll
 static void actualizar_eventos_epoll(int epoll_fd, FdInfo* info, uint16_t events){
     struct epoll_event ev;
     memset(&ev, 0, sizeof(ev));
@@ -762,6 +740,7 @@ static void actualizar_eventos_epoll(int epoll_fd, FdInfo* info, uint16_t events
 
 }
 
+// Inicializa y configura un socket UDP pasivo listo para recibir anuncios por broadcast
 static int crear_socket_udp_broadcast(int puerto) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd == -1) { perror("socket UDP"); exit(EXIT_FAILURE); }
@@ -793,6 +772,7 @@ static int crear_socket_udp_broadcast(int puerto) {
     return fd;
 }
 
+// Emite un paquete de broadcast UDP informando el puerto público y la disponibilidad de hardware actual
 static void enviar_anuncio_presence(int udp_fd, int puerto_publico, ResourceManager *rm) {
     struct sockaddr_in bc_addr;
     memset(&bc_addr, 0, sizeof(bc_addr));
@@ -801,7 +781,7 @@ static void enviar_anuncio_presence(int udp_fd, int puerto_publico, ResourceMana
     bc_addr.sin_addr.s_addr = inet_addr("255.255.255.255");
 
     char mensaje[256];
-    // EXTRAE LOS VALORES TOTALES REALES DEL RESOURCE MANAGER
+    // EXTRAE LOS VALORES TOTALES DEL RESOURCE MANAGER
     snprintf(mensaje, sizeof(mensaje), "ANNOUNCE %d cpu:%d mem:%d gpu:%d\n",
              puerto_publico,
              rm->cpu->disponible,
@@ -812,6 +792,7 @@ static void enviar_anuncio_presence(int udp_fd, int puerto_publico, ResourceMana
            (struct sockaddr*)&bc_addr, sizeof(bc_addr));
 }
 
+// Remueve de la tabla global aquellos nodos vecinos que no enviaron señales de vida por más de 15 segundos
 static void limpiar_nodos_expirados() {
     time_t ahora = time(NULL);
     int i = 0;
@@ -828,6 +809,7 @@ static void limpiar_nodos_expirados() {
     }
 }
 
+// Recibe los anuncios de presencia UDP y registra o actualiza dinámicamente los vecinos usando recvfrom
 static void manejar_lectura_udp(int udp_fd) {
     char buffer[512];
     struct sockaddr_in desde_addr;
@@ -840,11 +822,8 @@ static void manejar_lectura_udp(int udp_fd) {
     char cmd[32], recursos[128];
     int puerto;
     
-    // El sscanf ahora busca: ANNOUNCE <puerto> <recursos>
     if (sscanf(buffer, "%31s %d %[^\n]", cmd, &puerto, recursos) == 3) {
         if (strcmp(cmd, "ANNOUNCE") == 0) {
-            
-            // EXTRAEMOS LA IP DINÁMICAMENTE DESDE recvfrom() COMO PIDE EL CAMBIO
             char ip_remota[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &desde_addr.sin_addr, ip_remota, sizeof(ip_remota));
             
@@ -874,6 +853,7 @@ static void manejar_lectura_udp(int udp_fd) {
     }
 }
 
+// Lazo principal del Servidor: orquesta la inicialización de sockets, descubrimiento pasivo y multiplexación con epoll
 void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
     int escucha_publica = crear_socket_escucha("0.0.0.0", puerto_publico);
     int escucha_local = crear_socket_escucha("127.0.0.1", puerto_local);
@@ -904,6 +884,7 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
     printf("[INFO] Lanzando anuncio inicial de presencia (espera pasiva de 2 segundos)...\n");
     enviar_anuncio_presence(udp_fd,puerto_publico,rm); // Anuncio inmediato al arrancar 
     
+    // Bloque de descubrimiento inicial: 2 segundos de escucha activa para armar el vecindario antes de aceptar clientes
     time_t inicio_espera = time(NULL);
     while(difftime(time(NULL), inicio_espera) < 2.0) { // Bloque de espera activa controlada de 2s 
         int n = epoll_wait(epoll_fd, eventos, MAX_EVENTS, 500); // Ciclos cortos de timeout para capturar ráfagas UDP
@@ -918,8 +899,9 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
 
     time_t ultimo_anuncio = time(NULL);
 
+    // Lazo regular no bloqueante controlado por timeouts de 1 segundo para alarmas de tiempo
     while(1){
-        // Cambiamos -1 por 1000ms (1s) para que el bucle despierte solo y podamos computar el paso del tiempo
+        // Cambiamos -1 por 1000ms para que el bucle despierte solo y podamos computar el paso del tiempo
         int n = epoll_wait(epoll_fd, eventos, MAX_EVENTS, 1000); 
 
         if(n == -1){
@@ -957,7 +939,7 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
                     manejar_escritura_cliente(&state, info);
                 }
                 
-                // NUEVO: Ajuste de handler_disconnect en el cierre por error de epoll
+                // Gestiona desconexiones abruptas o errores de hardware detectados por epoll
                 if (eventos[i].events & (EPOLLHUP | EPOLLERR)) {
                     Notificacion notificaciones[MAX_NOTIFICACIONES];
                     int cant_notificaciones = 0;
