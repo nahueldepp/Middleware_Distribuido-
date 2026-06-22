@@ -510,22 +510,26 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                                 todos_concedidos = 0;
                             }
                         } else {
-                            // Ruteo hacia un nodo remoto: Abre un socket TCP y delega un RESERVE clásico
                             int puerto_remoto = -1;
+                            char ip_remota[INET_ADDRSTRLEN] = {0};
+                            
                             for (int i = 0; i < cantidad_nodos; i++) {
                                 if (tabla_nodos[i].puerto == puerto_req) {
                                     puerto_remoto = tabla_nodos[i].puerto;
+                                    strncpy(ip_remota, tabla_nodos[i].ip, sizeof(ip_remota) - 1);
                                     break;
                                 }
                             }
                             
-                            if (puerto_remoto != -1) {
+                            // Si encontramos el vecino registrado en nuestra tabla global
+                            if (puerto_remoto != -1 && strlen(ip_remota) > 0) {
                                 int rem_fd = socket(AF_INET, SOCK_STREAM, 0);
                                 struct sockaddr_in rem_addr;
                                 memset(&rem_addr, 0, sizeof(rem_addr));
                                 rem_addr.sin_family = AF_INET;
                                 rem_addr.sin_port = htons(puerto_remoto);
-                                rem_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+                                
+                                rem_addr.sin_addr.s_addr = inet_addr(ip_remota); 
                                 
                                 if (connect(rem_fd, (struct sockaddr*)&rem_addr, sizeof(rem_addr)) == 0) {
                                     char cmd_remoto[256];
@@ -618,14 +622,13 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                 }
             }
             
-            // Replicamos la orden de liberación a absolutamente todos los nodos vecinos
             for (int i = 0; i < cantidad_nodos; i++) {
                 int rem_fd = socket(AF_INET, SOCK_STREAM, 0);
                 struct sockaddr_in rem_addr;
                 memset(&rem_addr, 0, sizeof(rem_addr));
                 rem_addr.sin_family = AF_INET;
                 rem_addr.sin_port = htons(tabla_nodos[i].puerto);
-                rem_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+                rem_addr.sin_addr.s_addr = inet_addr(tabla_nodos[i].ip); 
                 
                 if (connect(rem_fd, (struct sockaddr*)&rem_addr, sizeof(rem_addr)) == 0) {
                     char cmd_release_vecino[256];
