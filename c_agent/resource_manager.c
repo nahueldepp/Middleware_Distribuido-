@@ -156,7 +156,6 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
     struct job_activo * actual = NULL;
     struct job_activo * anterior_nodo = NULL;
 
-    // Unificamos la búsqueda en la lista vinculada del cubo de la estructura hash
     if (job->socket == socket && job->id == id) {
         actual = job;
     } else {
@@ -190,7 +189,6 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
         rm->gpu->disponible += gpu_devuelto;
         rm->mem->disponible += mem_devuelto;
     } else {
-        // Lógica clásica de tu función original para recursos individuales
         if (rec == 0) { 
             if(actual->cpu_asignado < (unsigned int)cantidad) return -1; 
             actual->cpu_asignado -= cantidad;
@@ -354,12 +352,11 @@ void handler_disconnect(ResourceManager * rm, int socket, Notificacion* notifica
             desencolar(r);
 
             r->disponible -= cantidad_pendiente;
-            // el tipo de recurso es j (0=cpu, 1=gpu, 2=mem)
             hash_insertar(rm->activos, id_pendiente, socket_pendiente, j, cantidad_pendiente);
 
             notificaciones[*cant_notificaciones].socket = socket_pendiente;
             notificaciones[*cant_notificaciones].job_id = id_pendiente;
-            notificaciones[*cant_notificaciones].recurso = j;
+            notificaciones[*cant_notificaciones].recurso = j; // j representa el índice real del recurso
             notificaciones[*cant_notificaciones].cantidad = cantidad_pendiente;
             (*cant_notificaciones)++;
         }
