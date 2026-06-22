@@ -77,6 +77,7 @@ forzar_deadlock(PidScheduler, {{IpNodoA, PuertoA}, {IpNodoB, PuertoB}}) ->
     %% Esperamos las dos resoluciones para mostrar el resultado final.
     esperar_resultados(2).
 
+%% Orquesta el despacho asíncrono de un pedido individual hacia el planificador central.
 lanzar_un_job(PidScheduler, Pedido, Etiqueta, PidPadre) ->
     PidScheduler ! {pedido, self(), Pedido},
     receive
