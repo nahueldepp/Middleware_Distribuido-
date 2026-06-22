@@ -25,17 +25,21 @@ static unsigned int funcion_hash(unsigned int id, int socket, unsigned int capac
 // hash_init: dado un entero tamaño, reserva memoria para la tabla hash y devuelve el puntero a la tabla
 static struct hash_activos * hash_init(unsigned int t){
     struct hash_activos * tabla_hash = malloc(sizeof(struct hash_activos));
+    if (tabla_hash == NULL) return NULL;
     tabla_hash->capacidad = t;
     tabla_hash->tabla = calloc(t, sizeof(struct job_activo *));
     return tabla_hash;
 }
 
 // resources_init: toma un puntero a ResourceManager, la cantidad total de cpu, gpu y mem y el tamaño de la tabla y reserva memoria para cada componente del ResourceManager
-void resources_init(ResourceManager * rm, unsigned int cant_cpu, unsigned int cant_gpu, unsigned int cant_mem, unsigned int tam_activos){
+// retorna 0 en caso de tener exito y -1 en caso de error
+int resources_init(ResourceManager * rm, unsigned int cant_cpu, unsigned int cant_gpu, unsigned int cant_mem, unsigned int tam_activos){
     rm->cpu = malloc(sizeof(struct recurso_t));
     rm->gpu = malloc(sizeof(struct recurso_t));
     rm->mem = malloc(sizeof(struct recurso_t));
     rm->activos = hash_init(tam_activos);
+
+    if (rm->cpu == NULL || rm->gpu == NULL || rm->mem == NULL || rm->activos == NULL){ printf("Error: la funcion malloc falló\n"); return -1; }
 
     rm->cpu->total = rm->cpu->disponible = cant_cpu;
     rm->gpu->total = rm->gpu->disponible = cant_gpu;
@@ -44,11 +48,15 @@ void resources_init(ResourceManager * rm, unsigned int cant_cpu, unsigned int ca
     rm->cpu->primero = rm->cpu->ultimo = NULL;
     rm->gpu->primero = rm->gpu->ultimo = NULL;
     rm->mem->primero = rm->mem->ultimo = NULL;
+    return 0;
 }
 
 // encolar: funcion FIFO de insercion de la cola. crea un nuevo nodo y lo insterta al final de la cola
 static void encolar(recurso r, unsigned int id, int socket, unsigned int rec_solicitado, unsigned int cantidad){
     struct job_pendiente * nuevo_nodo = malloc(sizeof(struct job_pendiente));
+
+    if (nuevo_nodo == NULL) return NULL;
+
     nuevo_nodo->id = id;
     nuevo_nodo->socket = socket;
     nuevo_nodo->recurso_solicitado = rec_solicitado;
@@ -94,6 +102,9 @@ static void hash_insertar(struct hash_activos * tabla, unsigned int id, int sock
 
     if (job == NULL){ // si el nodo no existe en la tabla, reservo memoria para el nodo y lo inicializo en 0
         job = malloc(sizeof(struct job_activo));
+
+        if (job == NULL) { printf("Error: la funcion malloc falló\n"); return; }
+
         job->id = id;
         job->socket = socket;
         job->cpu_asignado = job->gpu_asignado = job->mem_asignado = 0;

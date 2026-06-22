@@ -20,7 +20,10 @@ int main(int argc, char **argv) {
 
     // Inicializa las estructuras de datos y el stock del administrador de recursos.
     ResourceManager rm;
-    resources_init(&rm, cpu, gpu, mem, 128);
+    if (resources_init(&rm, cpu, gpu, mem, 128) == -1){
+        printf("Error: no se inicializó el resource manager\n");
+        return 1;
+    }
 
     printf("[INFO] Agent starting\n");
     printf("[INFO] Public port: %d\n", puerto_publico);
