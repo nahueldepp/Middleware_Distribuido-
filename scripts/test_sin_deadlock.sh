@@ -36,6 +36,9 @@ echo -e "${BLUE}[TEST] Simulando Jobs concurrentes desde Erlang...${NC}"
 
 if [ -f "erlang_scheduler/scheduler.beam" ]; then
     echo -e "[TEST] Ejecutando planificador de Erlang..."
+    echo -e "[TEST] (Nota: se usa el MISMO escenario cruzado del §6, por eso el"
+    echo -e "[TEST]  log dirá 'FORZANDO deadlock'. La diferencia es que acá hay"
+    echo -e "[TEST]  recursos de sobra, así que ambos jobs terminan GRANTED.)"
     erl -noshell -pa erlang_scheduler -eval "scheduler:iniciar(9100)." -s init stop
 else
     echo -e "${RED}[ALERTA] No se encontró scheduler.beam compilado.${NC}"
