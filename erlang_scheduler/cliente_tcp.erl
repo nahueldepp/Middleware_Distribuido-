@@ -5,15 +5,16 @@
 %% Inicia la conexión con el agente C local.
 iniciar(Host, Puerto, SchedulerPid) ->
     %% {packet, line}: Erlang ensambla los datos hasta encontrar \n y entrega exactamente una línea por evento.
-    Opciones = [binary, {packet, line}, {active, true}],
+    Opciones = [binary, {packet, line}, {active, false}],
 
     case gen_tcp:connect(Host, Puerto, Opciones) of
         {ok, Socket} ->
             io:format("TCP Client: Conectado al agente C en ~p:~p~n", [Host, Puerto]),
             %% Con la línea siguiente nos aseguramos de que si el scheduler muere, este proceso muere también (y viceversa), evitando procesos huérfanos.
-            Pid = spawn_link(fun() -> bucle(Socket, SchedulerPid) end),
+            Pid = spawn_link(fun() -> bucle_init(Socket, SchedulerPid) end),
             %% Al abrir un socket con gen_tcp:connect, el proceso que ejecutó esa línea se hace dueño del socket. Sin la línea siguiente, todo mensaje asincrónico iban a ir al buzón del Planificador y no al del bucle.
             ok = gen_tcp:controlling_process(Socket, Pid),
+            Pid ! activar,
             {ok, Pid, Socket};
         {error, Razon} ->
             io:format("TCP Client: Falló la conexión: ~p~n", [Razon]),
@@ -24,7 +25,21 @@ iniciar(Host, Puerto, SchedulerPid) ->
 enviar_comando(Socket, Comando) ->
     %% El protocolo exige que las líneas ASCII terminen en \n.
     Mensaje = list_to_binary([Comando, "\n"]),
-    gen_tcp:send(Socket, Mensaje).
+    case gen_tcp:send(Socket, Mensaje) of
+        ok ->
+            ok;
+        {error, Razon} ->
+            io:format("TCP Client: Falló el envío del comando ~p: ~p~n", [Comando, Razon]),
+            {error, Razon}
+    end.
+
+%% Función que espera la señal y activa el Socket
+bucle_init(Socket, SchedulerPid) ->
+    receive
+        activar ->
+            inet:setopts(Socket, [{active, true}]),
+            bucle(Socket, SchedulerPid)
+    end.
 
 %% Bucle infinito que procesa lo que llega del socket.
 bucle(Socket, SchedulerPid) ->
