@@ -1085,7 +1085,7 @@ static void manejar_lectura_udp(int udp_fd) {
                 strncpy(tabla_nodos[cantidad_nodos].recursos, recursos, 128);
                 tabla_nodos[cantidad_nodos].ultima_vez = ahora;
                 cantidad_nodos++;
-                printf("[UDP] Nodo registrado dinámicamente desde recvfrom: %s:%d\n", ip_remota, puerto);
+                printf("ANNOUNCE: %s:%d:%s\n", ip_remota, puerto, recursos);
             }
         }
     }
