@@ -861,101 +861,24 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
     }
 
     // Comando JOB_REQUEST: atiende la petición compuesta de erlang local aplicando ruteo real
+
+ 
     if(strncmp(linea, "JOB_REQUEST",11) == 0){
         /*cuando A recibe  JOB_REQUEST 1005 @A:cpu:1 @B:gpu:1
         A guarda en coordinador_jobs el job completo que usa CPU en A y GPU en B.*/
         manejar_job_request(state, info, linea);
         return;
->>>>>>> 201dd01 (implementacion (correcta) de JOB_REQUEST con rollback y release coordinado)
+
     }
      
     // Comando JOB_RELEASE: Deshace todas las asignaciones de un Job en el nodo y replica a los vecinos
     if (strncmp(linea, "JOB_RELEASE", 11) == 0) {
-<<<<<<< HEAD
-        int req_id;
-        if (sscanf(linea, "JOB_RELEASE %d", &req_id) == 1) {
-            char str_id[32];
-            snprintf(str_id, sizeof(str_id), "%d", req_id);
-            
-            // 1. Buscamos el job en nuestra tabla hash antes de borrarlo para saber qué recursos tenía asignados
-            unsigned int indice_hash = funcion_hash(req_id, info->fd, state->rm->activos->capacidad);
-            struct job_activo * actual_job = state->rm->activos->tabla[indice_hash];
-            
-            unsigned int cpu_a_liberar = 0;
-            unsigned int gpu_a_liberar = 0;
-            unsigned int mem_a_liberar = 0;
-            
-            while (actual_job != NULL) {
-                if (actual_job->id == (unsigned int)req_id) {
-                    cpu_a_liberar = actual_job->cpu_asignado;
-                    gpu_a_liberar = actual_job->gpu_asignado;
-                    mem_a_liberar = actual_job->mem_asignado;
-                    break;
-                }
-                actual_job = actual_job->siguiente;
-            }
 
-            Notificacion notificaciones[MAX_NOTIFICACIONES];
-            int cant_notificaciones = 0;
-            
-            // 2. Liberamos localmente con "todo" (esto limpia las estructuras hash nativas)
-            int res = handler_release(state->rm, info->fd, str_id, "todo", "0", notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
-            
-            if (res == 0) {
-                for(int k = 0; k < cant_notificaciones; k++){
-                    char respuesta[128];
-                    snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
-                             notificaciones[k].job_id, obtener_recurso(notificaciones[k].recurso), notificaciones[k].cantidad);
-                    enviar_fd(notificaciones[k].socket, respuesta);
-                }
-            }
-            
-            // 3. Replicamos a los vecinos usando estrictamente el protocolo estándar de la cátedra
-            for (int i = 0; i < cantidad_nodos; i++) {
-                // EVITAMOS CONECTARNOS A NOSOTROS MISMOS
-                if (tabla_nodos[i].puerto == state->puerto_publico) {
-                    continue;
-                }
-
-                int rem_fd = socket(AF_INET, SOCK_STREAM, 0);
-                struct sockaddr_in rem_addr;
-                memset(&rem_addr, 0, sizeof(rem_addr));
-                rem_addr.sin_family = AF_INET;
-                rem_addr.sin_port = htons(tabla_nodos[i].puerto);
-                rem_addr.sin_addr.s_addr = inet_addr(tabla_nodos[i].ip); 
-                
-                if (connect(rem_fd, (struct sockaddr*)&rem_addr, sizeof(rem_addr)) == 0) {
-                    char cmd_release_vecino[256];
-                    
-                    // Solo enviamos si el Job remitió recursos compuestos al vecino en cuestión
-                    // Si el vecino es el dueño del hardware, procesará el string estándar limpio
-                    if (cpu_a_liberar > 0 && strcmp(tabla_nodos[i].recursos, "cpu") == 0) {
-                        snprintf(cmd_release_vecino, sizeof(cmd_release_vecino), "RELEASE %d cpu %u\n", req_id, cpu_a_liberar);
-                        send(rem_fd, cmd_release_vecino, strlen(cmd_release_vecino), 0);
-                    }
-                    if (gpu_a_liberar > 0 && strstr(tabla_nodos[i].recursos, "gpu") != NULL) {
-                        snprintf(cmd_release_vecino, sizeof(cmd_release_vecino), "RELEASE %d gpu %u\n", req_id, gpu_a_liberar);
-                        send(rem_fd, cmd_release_vecino, strlen(cmd_release_vecino), 0);
-                    }
-                    if (mem_a_liberar > 0 && strstr(tabla_nodos[i].recursos, "mem") != NULL) {
-                        snprintf(cmd_release_vecino, sizeof(cmd_release_vecino), "RELEASE %d mem %u\n", req_id, mem_a_liberar);
-                        send(rem_fd, cmd_release_vecino, strlen(cmd_release_vecino), 0);
-                    }
-                    close(rem_fd);
-                } else {
-                    close(rem_fd);
-                }
-            }
-            enviar(state->epoll_fd, info, "OK\n");
-            return;
-        }
-    }
-=======
         /*cuando A recibe */
       manejar_job_release(state, info, linea);
       return;
     } 
->>>>>>> 201dd01 (implementacion (correcta) de JOB_REQUEST con rollback y release coordinado)
+
 
     // Comando JOB_STATUS: Responde afirmativamente de forma directa para confirmar al planificador
     // distribuido que el Job consultado se encuentra activo
