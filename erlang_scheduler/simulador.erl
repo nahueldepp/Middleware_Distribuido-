@@ -1,5 +1,6 @@
 -module(simulador).
 -export([iniciar/2, iniciar_random/2, forzar_deadlock/2]).
+-export([forzar_deadlock_lado/3]).
 
 iniciar_random(PidScheduler, NodosDisponibles) ->
     iniciar_random(PidScheduler, NodosDisponibles, 0).
@@ -85,6 +86,18 @@ forzar_deadlock(PidScheduler, {{IpNodoA, PuertoA}, {IpNodoB, PuertoB}}) ->
 
     %% Esperamos las dos resoluciones para mostrar el resultado final.
     esperar_resultados(2).
+
+%% Ejecuta un solo lado del escenario cruzado de la sección 6. Cada scheduler (el de A y el de B) la llama con un Lado distinto (job1 o job2), y según ese átomo arma el pedido correspondiente y lo despacha al planificador.
+forzar_deadlock_lado(PidScheduler, job1, {{IpA, PuertoA}, {IpB, PuertoB}}) ->
+    timer:sleep(rand:uniform(50)),   %% pequeño jitter para que la carrera sea pareja
+    %% Job1 (nodo A): 2 CPU de A + 1 GPU de B
+    Pedido = [{IpA, PuertoA, "cpu", 2}, {IpB, PuertoB, "gpu", 1}],
+    lanzar_un_job(PidScheduler, Pedido, "Job1(A)", self());
+forzar_deadlock_lado(PidScheduler, job2, {{IpA, PuertoA}, {IpB, PuertoB}}) ->
+    timer:sleep(rand:uniform(50)),
+    %% Job2 (nodo B): 1 GPU de B + 2 CPU de A
+    Pedido = [{IpB, PuertoB, "gpu", 1}, {IpA, PuertoA, "cpu", 2}],
+    lanzar_un_job(PidScheduler, Pedido, "Job2(B)", self()).
 
 %% Orquesta el despacho asíncrono de un pedido individual hacia el planificador central.
 lanzar_un_job(PidScheduler, Pedido, Etiqueta, PidPadre) ->
