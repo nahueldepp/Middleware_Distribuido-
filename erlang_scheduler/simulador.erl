@@ -41,9 +41,18 @@ generar_pedido_random(NodosDisponibles) ->
 pedidos_para_nodo({_IP, _Puerto, []}) ->
     [];
 pedidos_para_nodo({IP, Puerto, Recursos}) ->
-    CantidadRecursos = rand:uniform(length(Recursos)),
-    RecursosElegidos = elegir_n_al_azar(CantidadRecursos, Recursos),
-    [pedido_para_recurso(IP, Puerto, Recurso, Total) || {Recurso, Total} <- RecursosElegidos].
+    Disponibles = [R || {_Nombre, Total} = R <- Recursos, Total > 0],
+    case Disponibles of
+        [] ->
+            [];
+        _ ->
+            CantidadRecursos = rand:uniform(length(Disponibles)),
+            RecursosElegidos = elegir_n_al_azar(CantidadRecursos, Disponibles),
+            [
+                pedido_para_recurso(IP, Puerto, Recurso, Total)
+             || {Recurso, Total} <- RecursosElegidos
+            ]
+    end.
 
 pedido_para_recurso(IP, Puerto, Recurso, Total) ->
     %% Pedimos entre 1 y el total disponible del recurso.
