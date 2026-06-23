@@ -20,7 +20,9 @@ static void sumar_recurso(ResourceManager * rm, unsigned int rec, unsigned int c
 }
 
 // funcion hash compuesta
-unsigned int funcion_hash(unsigned int id, int socket, unsigned int capacidad) { return (id + socket) % capacidad; }
+
+static unsigned int funcion_hash(unsigned int id, unsigned int capacidad) { return id % capacidad; }
+
 
 // hash_init: dado un entero tamaño, reserva memoria para la tabla hash y devuelve el puntero a la tabla
 static struct hash_activos * hash_init(unsigned int t){
@@ -82,23 +84,22 @@ static int desencolar(recurso r){
     }
 }
 
-// hash_buscar: dadas la tabla hash, el id y socket, devuelve un puntero al nodo que coincide o NULL si no existe
-static struct job_activo * hash_buscar(struct hash_activos * tabla, unsigned int id, int socket){
-    unsigned int i = funcion_hash(id, socket, tabla->capacidad);
+/// hash_buscar: dada la tabla hash y el id, devuelve un puntero al job_activo o NULL si no existe.
+// IMPORTANTE: el socket NO forma parte de la identidad lógica del job.
+// RESERVE y RELEASE pueden llegar por conexiones/fd distintos.
+static struct job_activo * hash_buscar(struct hash_activos * tabla, unsigned int id){
+    unsigned int i = funcion_hash(id, tabla->capacidad);
     struct job_activo * actual = tabla->tabla[i];
     while (actual != NULL){
-        // si tanto el socket como el id coincide, devuelve el puntero al job_activo
-        if (actual->id == id && actual->socket == socket) return actual;
+        if (actual->id == id) return actual;
         actual = actual->siguiente;
     }
-    // si ninguno coincide, retorna NULL
     return NULL;
 }
-
 // hash_insertar: dada la tabla hash, el socket, id, recurso y cantidad, crea un nuevo nodo y lo inserta el la tabla hash
 // o suma la cantidad al recurso correspondiente en caso de que el mismo socket ya tenga un job con el mismo id ya insertado
 static void hash_insertar(struct hash_activos * tabla, unsigned int id, int socket, unsigned int tipo_recurso, unsigned int cantidad){
-    struct job_activo * job = hash_buscar(tabla, id, socket);
+    struct job_activo * job = hash_buscar(tabla, id);
 
     if (job == NULL){ // si el nodo no existe en la tabla, reservo memoria para el nodo y lo inicializo en 0
         job = malloc(sizeof(struct job_activo));
@@ -108,7 +109,7 @@ static void hash_insertar(struct hash_activos * tabla, unsigned int id, int sock
         job->id = id;
         job->socket = socket;
         job->cpu_asignado = job->gpu_asignado = job->mem_asignado = 0;
-        unsigned int i = funcion_hash(id, socket, tabla->capacidad);
+        unsigned int i = funcion_hash(id, tabla->capacidad);
         job->siguiente = tabla->tabla[i];
         tabla->tabla[i] = job;
     }
@@ -159,7 +160,7 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
     if (!liberacion_total && cantidad <= 0) { printf("Error: cantidad invalida\n"); return -1; }
     if (!liberacion_total && rec == -1) { printf("Error: recurso inexistente\n"); return -1; }
 
-    unsigned int i = funcion_hash(id, socket, rm->activos->capacidad);
+    unsigned int i = funcion_hash(id, rm->activos->capacidad);
     struct job_activo * job = rm->activos->tabla[i];
 
     if (job == NULL) { printf("Error: JOB inexistente\n"); return -1; }

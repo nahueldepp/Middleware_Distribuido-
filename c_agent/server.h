@@ -2,6 +2,7 @@
 #define __SERVER_H__
 
 #include "resource_manager.h"
+#include "coordinador_jobs.h"
 
 #define READ_BUFFER_SIZE 4096
 #define WRITE_BUFFER_SIZE 4096
@@ -39,6 +40,8 @@ typedef struct {
     ResourceManager *rm;
     int puerto_local;
     int puerto_publico;
+
+    CoordinatorJobTable coordinador_jobs;
 } ServerState;
 
 void enviar(int epoll_fd, FdInfo* info, const char* msg);

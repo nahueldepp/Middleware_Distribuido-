@@ -1,44 +1,63 @@
-# Configuración del compilador y banderas para C
-CC = gcc
-CFLAGS = -Wall -Wextra -g -O2 -I.
+# Compilador y flags para C
+CC := gcc
+CFLAGS := -Wall -Wextra -g -O2
 
-# Compilador para Erlang
-ERLC = erlc
-ERL_FLAGS = -o erlang_scheduler
+# Compilador de Erlang
+ERLC := erlc
 
-# Nombre del ejecutable final de C
-TARGET = agent
+# Ejecutable final del agente C
+TARGET := agent
 
-# Archivos fuente y objetos de C
-SRCS = c_agent/server.c c_agent/main.c c_agent/resource_manager.c
-OBJS = $(SRCS:.c=.o)
+# Detecta si los fuentes estan en c_agent/ o en el directorio actual
+C_DIR := $(if $(wildcard c_agent/main.c),c_agent,.)
+ERL_DIR := $(if $(wildcard erlang_scheduler/scheduler.erl),erlang_scheduler,.)
 
-# Archivos fuente y binarios (.beam) de Erlang
-ERL_SRCS = erlang_scheduler/scheduler.erl erlang_scheduler/simulador.erl erlang_scheduler/cliente_tcp.erl
-ERL_BEAMS = $(ERL_SRCS:.erl=.beam)
+# Includes C
+CFLAGS += -I$(C_DIR)
 
-# Regla principal: compila C y Erlang simultáneamente
+# Fuentes C
+C_SRCS := \
+	$(C_DIR)/main.c \
+	$(C_DIR)/server.c \
+	$(C_DIR)/resource_manager.c \
+	$(C_DIR)/coordinador_jobs.c
+
+C_OBJS := $(C_SRCS:.c=.o)
+C_DEPS := $(C_OBJS:.o=.d)
+
+# Fuentes Erlang
+ERL_SRCS := \
+	$(ERL_DIR)/scheduler.erl \
+	$(ERL_DIR)/simulador.erl \
+	$(ERL_DIR)/cliente_tcp.erl
+
+ERL_BEAMS := $(ERL_SRCS:$(ERL_DIR)/%.erl=$(ERL_DIR)/%.beam)
+
+# Regla principal
 all: $(TARGET) erlang
 
-# Vinculación del binario final de C
-$(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS)
+# Link del binario C
+$(TARGET): $(C_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^
 
-# Regla genérica para compilar archivos .c a objetos .o
+# Compilacion C con dependencias automaticas de headers
 %.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
-# Regla para compilar todos los archivos de Erlang (.erl -> .beam)
+# Compilacion Erlang
 erlang: $(ERL_BEAMS)
 
-# Regla genérica para compilar archivos .erl a .beam usando erlc
-erlang_scheduler/%.beam: erlang_scheduler/%.erl
-	$(ERLC) $(ERL_FLAGS) $<
+$(ERL_DIR)/%.beam: $(ERL_DIR)/%.erl
+	$(ERLC) -o $(ERL_DIR) $<
 
-# Regla para limpiar los archivos binarios generados (C y Erlang)
+# Limpieza
 clean:
-	rm -f $(OBJS) $(TARGET)
-	rm -f erlang_scheduler/*.beam
+	rm -f $(TARGET) $(C_OBJS) $(C_DEPS)
+	rm -f $(ERL_DIR)/*.beam erl_crash.dump
 
-# Declarar que estas reglas no corresponden a archivos reales
-.PHONY: all clean erlang
+# Fuerza recompilacion completa
+rebuild: clean all
+
+.PHONY: all clean rebuild erlang
+
+-include $(C_DEPS)

@@ -11,11 +11,29 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <time.h>
+#include "coordinador_jobs.h"
 
 #include "resource_manager.h"
 #include "server.h"
 
 #define MAX_NODOS 32
+
+
+//para hacer rollback de lo que fue concedido
+#define MAX_RECURSOS_JOB 32
+#define MAX_IP_LEN 64
+#define MAX_RECURSO_LEN 32
+
+/*Estructura usada mintras se intenta reservar recursos
+para el proceso tmporal de JOB_REQUEST*/
+typedef struct {
+    char ip[MAX_IP_LEN];
+    int puerto;
+    char recurso[MAX_RECURSO_LEN];
+    int cantidad;
+    int es_local;
+    int concedido;
+} ReservaParcial;
 
 // Estructura para registrar los atributos y la última actividad de los nodos vecinos
 typedef struct {
@@ -47,6 +65,7 @@ static int crear_socket_udp_broadcast(int puerto);
 static void enviar_anuncio_presence(int udp_fd, int puerto_publico, ResourceManager *rm);
 static void limpiar_nodos_expirados();
 static void manejar_lectura_udp(int udp_fd);
+static int parse_request_job(const char *token,char *ip,size_t ip_size,int *puerto,char *recurso,size_t recurso_size,int *cantidad);
 
 // Retorna la representación en texto del índice numérico de un recurso
 static const char* obtener_recurso(int intRecurso){
@@ -252,28 +271,8 @@ static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
         /* Leemos lo que llega de fd y lo almacenamos en info->read_buffer */
 
         /* Como cada fd tiene asociado un buffer de lectura chequeamos que no este lleno */
-        if(info->read_len >= READ_BUFFER_SIZE){
-            printf("[ERROR] buffer de lectura de fd:<%d> lleno\n", info->fd);
-            
-            // Declaramos buffers de notificación para cumplir la nueva firma
-            Notificacion notificaciones[MAX_NOTIFICACIONES];
-            int cant_notificaciones = 0;
-            handler_disconnect(state->rm, info->fd, notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
-            
-            // Despachamos los GRANTED a los sockets que se destrabaron en la cola
-            for(int i = 0; i < cant_notificaciones; i++){
-                char respuesta[128];
-                snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
-                         notificaciones[i].job_id, 
-                         obtener_recurso(notificaciones[i].recurso),
-                         notificaciones[i].cantidad);
-                enviar_fd(notificaciones[i].socket, respuesta);
-            }
-            
-            cerrar_conexion(state->epoll_fd, info);
-            return;
-        }
-
+        
+        
         ssize_t n = read(info->fd,
                          info->read_buffer + info->read_len,
                          READ_BUFFER_SIZE - info->read_len);
@@ -284,44 +283,430 @@ static void manejar_lectura_cliente(ServerState* state, FdInfo* info){
             }
             perror("read");
             
-            // Manejo de notificaciones en error de lectura
+            /* // Manejo de notificaciones en error de lectura
             Notificacion notificaciones[MAX_NOTIFICACIONES];
             int cant_notificaciones = 0;
             handler_disconnect(state->rm, info->fd, notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
             
             for(int i = 0; i < cant_notificaciones; i++){
                 char respuesta[128];
-                snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
-                         notificaciones[i].job_id, obtener_recurso(notificaciones[i].recurso), notificaciones[i].cantidad);
-                enviar_fd(notificaciones[i].socket, respuesta);
-            }
+                snprintf(respuesta, sizeof(respuesta), "GRANTED %d\n", 
+                         notificaciones[i].job_id);
+            } */
             
             cerrar_conexion(state->epoll_fd, info);
             return; 
         }
-        
-        if(n == 0){
-            printf("[INFO]>> Cliente desconectado fd=%d\n", info->fd);
-            
-            // Manejo de notificaciones en desconexión limpia
-            Notificacion notificaciones[MAX_NOTIFICACIONES];
-            int cant_notificaciones = 0;
-            handler_disconnect(state->rm, info->fd, notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
-            
-            for(int i = 0; i < cant_notificaciones; i++){
-                char respuesta[128];
-                snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
-                         notificaciones[i].job_id, obtener_recurso(notificaciones[i].recurso), notificaciones[i].cantidad);
-                enviar_fd(notificaciones[i].socket, respuesta);
-            }
-            
+        /*El otro lado cerro la conexion de forma ordenada*/
+        if (n == 0) {
+
             cerrar_conexion(state->epoll_fd, info);
             return;
-        }
-
+        } 
         info->read_len += (size_t)n;        
         procesar_lineas(state, info);
     }
+}
+
+/*parsea una request de forma  @IP:PUERTO:RECURSO:CANTIDAD*/
+static int parse_request_job(const char *token,char *ip,size_t ip_size,int *puerto,char *recurso,size_t recurso_size,int *cantidad){
+
+    char ip_tmp[MAX_IP_LEN];
+    char recurso_tmp[MAX_RECURSO_LEN];
+    int puerto_tmp;
+    int cantidad_tmp;
+
+    int parsed = sscanf(token, "@%63[^:]:%d:%31[^:]:%d", ip_tmp, &puerto_tmp, recurso_tmp, &cantidad_tmp);
+    if(parsed != 4){
+        return 0;
+    }
+
+    if(cantidad_tmp <= 0 || puerto_tmp <= 0){
+        return 0;
+    }
+
+    strncpy(ip, ip_tmp, ip_size - 1);
+    ip[ip_size -1] = '\0';
+
+    strncpy(recurso, recurso_tmp, recurso_size);
+    recurso[recurso_size - 1] = '\0';
+    *puerto = puerto_tmp;
+    *cantidad = cantidad_tmp;
+
+    return 1;
+}
+
+static int es_recurso_local(ServerState* state, int puerto_req){
+    return puerto_req == state->puerto_publico;
+}
+
+static int reserve_local(ServerState* state, FdInfo* info, int job_id, const char* recurso, int cantidad){
+    char str_id[32];
+    char str_cant[32];
+
+    snprintf(str_id, sizeof(str_id), "%d", job_id);
+    snprintf(str_cant, sizeof(str_cant),"%d", cantidad);
+
+    int res = handler_reserve(state->rm, info->fd, str_id, recurso, str_cant);
+
+    /*
+    res == 1 concedido
+    res == 0 puede significar encolado/no concedido
+    Para JOB_REQUEST compuesto(ej:JOB_REQUEST 1002 @127.0.0.1:8100:cpu:1 @127.0.0.1:8101:gpu:1), solo aceptamos concedido de inmediato*/
+    return res == 1;
+}
+
+static void releace_local(ServerState* state, FdInfo* info, int job_id, const char* recurso, int cantidad){
+
+    char str_id[32];
+    char str_cant[32];
+
+    snprintf(str_id, sizeof(str_id), "%d", job_id);
+    snprintf(str_cant, sizeof(str_cant),"%d", cantidad);
+
+    Notificacion notificaciones[MAX_NOTIFICACIONES];
+    int c_not = 0;
+
+    handler_release(state->rm, info->fd, str_id, recurso, str_cant, notificaciones, &c_not, MAX_NOTIFICACIONES);
+    /*Solo llamamos liberar_local para reservas que ya sabemos que fueron concedidas, no necesitamos recorrer*/
+    return;
+}
+
+static int recv_line_blocking(int fd, char *buffer, size_t buffer_size) {
+    size_t pos = 0;
+    while (pos + 1 < buffer_size) {
+        char c;
+        
+        ssize_t n = recv(fd, &c, 1, 0);
+        
+        if (n == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
+
+            perror("[REMOTE] recv_line");
+            return 0;
+        }
+        
+        if (n == 0) {
+            printf("[REMOTE] conexion cerrada antes de recibir linea completa\n");
+            return 0;
+        }
+
+        buffer[pos++] = c;
+        
+        if (c == '\n') {
+            break;
+        }
+    }
+    
+    buffer[pos] = '\0';
+
+    return pos > 0;
+}
+static int reserve_remoto_bloqueante(const char* ip, int puerto, int job_id, const char* recurso, int cantidad){
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    
+    if(fd == -1){
+        perror("socket remote_reserve");
+        return 0;
+    }
+    
+    struct sockaddr_in addr; 
+    memset(&addr, 0, sizeof(addr));
+    
+    addr.sin_family = AF_INET; 
+    addr.sin_port = htons(puerto);
+    
+    if(inet_pton(AF_INET, ip, &addr.sin_addr) != 1){
+        fprintf(stderr, "[ERROR] IP remota invalida: %s\n", ip);
+        close(fd);
+        return 0;
+    }
+    if(connect(fd, (struct sockaddr*) &addr, sizeof(addr)) == -1){
+        perror("connect release_remoto");
+        close(fd);
+        return 0;
+    }
+    
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "RESERVE %d %s %d\n", job_id, recurso, cantidad);
+    
+    if(send(fd, cmd, strlen(cmd), MSG_NOSIGNAL) == -1){
+        perror("send remote_reserve");
+        close(fd);
+        return 0;
+    }
+    
+    char resp[128];
+    
+    if (recv_line_blocking(fd, resp, sizeof(resp)) == 0) {
+        close(fd);
+        return 0;
+    }
+
+    resp[strlen(resp)-1] = '\0';
+    printf("[REMOTE] respuesta=<%s>\n", resp);
+
+
+    char resp_cmd[32];
+    int resp_job_id;
+
+    if(sscanf(resp, "%31s %d", resp_cmd, &resp_job_id) != 2){
+        printf("[REMOTE] respuesta invalida=<%s>\n", resp);
+        close(fd);
+        return 0;
+    }
+
+    if (strcmp(resp_cmd, "GRANTED") == 0 && resp_job_id == job_id) {
+        close(fd);
+        return 1;
+    }
+
+    close(fd);
+    return 0;
+}
+
+static void releace_remoto_bloqueante(const char* ip, int puerto, int job_id, const char* recurso, int cantidad){
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if(fd == -1){
+        perror("socket release_remoto");
+        return ;
+    }
+
+    struct sockaddr_in addr;
+    memset(&addr,0 ,sizeof(addr));
+
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(puerto);
+
+    if(inet_pton(AF_INET, ip, &addr.sin_addr) != 1){
+        fprintf(stderr, "[ERROR] IP remota inválida: %s\n", ip);
+        close(fd);
+        return;
+    }
+
+    if(connect(fd, (struct sockaddr*) &addr, sizeof(addr)) == -1){
+        perror("connect release_remoto");
+        close(fd);
+        return;
+    }
+
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "RELEASE %d %s %d\n", job_id, recurso, cantidad);
+    
+    if(send(fd, cmd, strlen(cmd), MSG_NOSIGNAL) == -1){
+        perror("send release_remoto");
+        close(fd);
+        return;
+    }
+   
+
+    close(fd);
+}
+
+/*Si ocurre un fallo o desconeccion rollback_reserve libera jobs en orden contrario a los que se reservo*/
+static void rollback_reserve(ServerState* state, FdInfo* info, int job_id, ReservaParcial parciales[], int cant_parciales){
+
+    printf("[JOB] Rollback job:<%d>\n", job_id);
+
+    for(int i = cant_parciales - 1; i >= 0; i--){
+        ReservaParcial* r = &parciales[i];
+
+        if(!r->concedido){
+            continue;
+        }
+
+        if(r->es_local){
+            /*si es local tengo que liberar los recursos de manera local usando e resourse manager*/
+            printf("[JOB] Rollback local job_id:<%d> resource:<%s> amount:<%d>\n",
+                job_id, r->recurso, r->cantidad);
+            
+            releace_local(state, info, job_id, r->recurso, r->cantidad);   
+        }
+        else{
+            /*si no es local tengo que pedir al agent c remoto que los libere*/
+            printf("[JOB] Rollback remoto job_id:<%d> node:<%s:%d> resource:<%s> amount:<%d>\n",
+            job_id, r->ip, r->puerto, r->recurso, r->cantidad );
+            releace_remoto_bloqueante(r->ip, r->puerto, job_id, r->recurso,r->cantidad);
+        }
+        r->concedido = 0;
+    }
+}
+
+
+static void manejar_job_request(ServerState* state,FdInfo* info,const char* linea){
+
+    char linea_copia[1024];
+
+    strncpy(linea_copia, linea, sizeof(linea_copia) - 1);
+    linea_copia[sizeof(linea_copia) - 1] = '\0';
+
+    char* saveptr = NULL;
+
+    /*segun el manual:
+    The  strtok_r()  function is a reentrant version of strtok().  The saveptr argument is a pointer to a char * variable that is used internally by strtok_r() in order
+    to maintain context between successive calls that parse the same string.
+    recordemos que tenemos que parsear algo de la forma
+    JOB REQUEST 1001 @192.168.1.2:cpu:2 @192.168.1.3:gpu:1
+    */
+    char* cmd = strtok_r(linea_copia, " \t\r\n", &saveptr);
+    char* job_id_str = strtok_r(NULL, " \t\r\n", &saveptr);
+    
+    if(cmd == NULL || job_id_str == NULL){
+        enviar(state->epoll_fd, info, "JOB_DENIED 0\n");
+        return;
+    }
+
+    int job_id = atoi(job_id_str);
+    if(job_id <= 0){
+        enviar(state->epoll_fd,info, "JOB_DENIED 0\n");
+        return;
+    }
+
+    /*evita que dos JOB_REQUEST distintos usen el mismo job_id y se pisen en la tabla*/
+    if (coordinator_jobs_get(&state->coordinador_jobs, job_id) != NULL) {
+    char respuesta[128];
+    snprintf(respuesta, sizeof(respuesta), "JOB_DENIED %d\n", job_id);
+    enviar(state->epoll_fd, info, respuesta);
+    return;
+}
+
+    ReservaParcial parciales[MAX_RECURSOS_JOB];
+    int cant_parciales = 0; 
+
+    int todos_concedidos = 1;
+    int hubo_al_menos_un_recurso = 0;
+
+    char* token;
+
+    while((token = strtok_r(NULL, " \t\r\n", &saveptr)) != NULL){
+        if(token[0] != '@'){
+            continue;
+        }
+
+        hubo_al_menos_un_recurso = 1;
+
+        if(cant_parciales >= MAX_RECURSOS_JOB){
+            todos_concedidos = 0;
+            break;
+        }
+
+        ReservaParcial* reserva = &parciales[cant_parciales];
+        memset(reserva, 0 , sizeof(*reserva));
+
+        if(!parse_request_job(token,reserva->ip,sizeof(reserva->ip) ,&reserva->puerto, 
+                reserva->recurso, sizeof(reserva->recurso),&reserva->cantidad )){
+            
+            printf("[JOB] Token invalido en JOB_REQUEST: %s\n", token);
+            todos_concedidos = 0;
+            break;
+        }
+
+        reserva->es_local = es_recurso_local(state, reserva->puerto);
+        reserva->concedido = 0;
+
+        printf("[JOB] Intentando reserva job=%d nodo=%s:%d recurso=%s cant=%d local=%d\n",
+               job_id,
+               reserva->ip,
+               reserva->puerto,
+               reserva->recurso,
+               reserva->cantidad,
+               reserva->es_local);
+
+        int ok;
+
+        if(reserva->es_local){
+            //printf("Entre al reserve_local\n");
+            ok = reserve_local(state, info, job_id, reserva->recurso, reserva->cantidad);
+        }
+        else{
+           // printf("Entre al reserve_remoto_bloqueante\n");
+            ok = reserve_remoto_bloqueante(reserva->ip, reserva->puerto, job_id, reserva->recurso, reserva->cantidad);
+        }
+
+        if(!ok){
+            printf("[JOB] Reserva fallida job_id:<%d> node:<%s:%d> resource:<%s> amount:<%d>\n",
+                job_id, reserva->ip, reserva->puerto, reserva->recurso, reserva->cantidad);
+
+            todos_concedidos = 0;
+            break;
+        }
+
+        reserva->concedido = 1;
+        cant_parciales++;
+    }
+
+    char respuesta[128];
+
+    if(todos_concedidos && hubo_al_menos_un_recurso){
+        if (!coordinator_jobs_create(&state->coordinador_jobs, job_id)) {
+
+        rollback_reserve(state, info, job_id, parciales, cant_parciales);
+        snprintf(respuesta, sizeof(respuesta), "JOB_DENIED %d\n", job_id);
+        enviar(state->epoll_fd, info, respuesta);
+        return;
+    }
+
+        for (int i = 0; i < cant_parciales; i++) {
+            ReservaParcial *r = &parciales[i];
+
+            coordinator_jobs_add_resource(&state->coordinador_jobs,
+                                        job_id,
+                                        r->ip,
+                                        r->puerto,
+                                        r->recurso,
+                                        r->cantidad,
+                                        r->es_local);
+        }
+        snprintf(respuesta, sizeof(respuesta), "JOB_GRANTED %d\n", job_id);
+        printf("[JOB] JOB_GRANTED %d\n", job_id);
+    }
+    else{
+        rollback_reserve(state, info, job_id, parciales, cant_parciales);
+
+        snprintf(respuesta, sizeof(respuesta),"JOB_DENIED %d\n", job_id);
+
+        printf("[JOB] JOB_DENIED %d\n", job_id);
+    }
+
+    enviar(state->epoll_fd, info, respuesta);
+
+
+}
+
+static void manejar_job_release(ServerState* state,FdInfo* info,const char* linea){
+    char cmd[32];
+    int job_id;
+
+    if (sscanf(linea, "%31s %d", cmd, &job_id) != 2) {
+        enviar(state->epoll_fd, info, "ERROR\n");
+        return;
+    }
+
+    CoordinatedJob *job = coordinator_jobs_get(&state->coordinador_jobs, job_id);
+
+    if (job == NULL) {
+        enviar(state->epoll_fd, info, "ERROR\n");
+        return;
+    }
+    /*La razón de liberar en orden inverso es la misma que en rollback: 
+    si se reservo A después B después C, soltar C, B, A es más prolijo.*/
+    for (int i = job->cant_recursos - 1; i >= 0; i--) {
+        CoordinatedResource *r = &job->recursos[i];
+
+        if (r->es_local) {
+            releace_local(state,info,job_id,r->recurso,  r->cantidad);
+        } else {
+            releace_remoto_bloqueante(r->ip,r->puerto,job_id,r->recurso,  r->cantidad);
+        }
+    }
+
+    coordinator_jobs_remove(&state->coordinador_jobs, job_id);
+
+    enviar(state->epoll_fd, info, "OK\n");
 }
 
 // Trocea el flujo continuo de bytes buscando caracteres '\n' para extraer líneas completas
@@ -420,7 +805,9 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
             if(res == 1){
                 printf("[INFO] GRANTED job_id:<%s> resourse:<%s> amount:<%s>\n",
                     job_id, resource, cantidad);
-                enviar(state->epoll_fd, info, "GRANTED\n");
+                char respuesta[32];
+                snprintf(respuesta, sizeof(respuesta),"GRANTED %d\n", atoi(job_id));
+                enviar(state->epoll_fd, info, respuesta);
             }
             else if(res == 0){
                 printf("[INFO] QUEUED job_id:<%s> resourse:<%s> amount:<%s>\n",
@@ -451,10 +838,8 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                 for(int i = 0; i < cant_notificaciones; i++){
                     char respuesta[128];
 
-                    snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
-                    notificaciones[i].job_id, 
-                    obtener_recurso(notificaciones[i].recurso),
-                    notificaciones[i].cantidad);
+                    snprintf(respuesta, sizeof(respuesta), "GRANTED %d\n", 
+                    notificaciones[i].job_id);
 
                     enviar_fd(notificaciones[i].socket, respuesta);
                 }
@@ -476,6 +861,7 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
     }
 
     // Comando JOB_REQUEST: atiende la petición compuesta de erlang local aplicando ruteo real
+<<<<<<< HEAD
     if (strncmp(linea, "JOB_REQUEST", 11) == 0) {
         int req_id;
         if (sscanf(linea, "JOB_REQUEST %d", &req_id) == 1) {
@@ -599,10 +985,18 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
             enviar(state->epoll_fd, info, buffer_respuesta);
             return;
         }
+=======
+    if(strncmp(linea, "JOB_REQUEST",11) == 0){
+        /*cuando A recibe  JOB_REQUEST 1005 @A:cpu:1 @B:gpu:1
+        A guarda en coordinador_jobs el job completo que usa CPU en A y GPU en B.*/
+        manejar_job_request(state, info, linea);
+        return;
+>>>>>>> 201dd01 (implementacion (correcta) de JOB_REQUEST con rollback y release coordinado)
     }
-    
+     
     // Comando JOB_RELEASE: Deshace todas las asignaciones de un Job en el nodo y replica a los vecinos
     if (strncmp(linea, "JOB_RELEASE", 11) == 0) {
+<<<<<<< HEAD
         int req_id;
         if (sscanf(linea, "JOB_RELEASE %d", &req_id) == 1) {
             char str_id[32];
@@ -681,6 +1075,12 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
             return;
         }
     }
+=======
+        /*cuando A recibe */
+      manejar_job_release(state, info, linea);
+      return;
+    } 
+>>>>>>> 201dd01 (implementacion (correcta) de JOB_REQUEST con rollback y release coordinado)
 
     // Comando JOB_STATUS: Responde afirmativamente de forma directa para confirmar al planificador
     // distribuido que el Job consultado se encuentra activo
@@ -749,9 +1149,8 @@ static void manejar_escritura_cliente(ServerState* state, FdInfo* info){
             
             for(int i = 0; i < cant_notificaciones; i++){
                 char respuesta[128];
-                snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
-                         notificaciones[i].job_id, obtener_recurso(notificaciones[i].recurso), notificaciones[i].cantidad);
-                enviar_fd(notificaciones[i].socket, respuesta);
+                snprintf(respuesta, sizeof(respuesta), "GRANTED %d\n", 
+                         notificaciones[i].job_id);
             }
             
             cerrar_conexion(state->epoll_fd, info);
@@ -907,6 +1306,7 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
     state.rm = rm;
     state.puerto_local = puerto_local;
     state.puerto_publico = puerto_publico;
+    coordinator_jobs_init(&state.coordinador_jobs);
 
     if(epoll_fd == -1){
         perror("epoll_create1");
@@ -960,7 +1360,7 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
 
         for(int i = 0; i < n; i++){
             FdInfo* info = eventos[i].data.ptr;
-
+            
             if(info->type == FD_ESCUCHA_LOCAL ){
                 aceptar_clientes(epoll_fd, info->fd, FD_AGENTE_ERLANG);
             }
@@ -976,7 +1376,7 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
                 if(eventos[i].events & EPOLLIN){
                     manejar_lectura_cliente(&state, info);
                 }
-                if (eventos[i].events & EPOLLOUT) {
+                if (eventos[i].events & EPOLLOUT ) {
                     manejar_escritura_cliente(&state, info);
                 }
                 
@@ -989,9 +1389,8 @@ void server_run(int puerto_publico, int puerto_local, ResourceManager *rm){
                     
                     for(int k = 0; k < cant_notificaciones; k++){
                         char respuesta[128];
-                        snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
-                                 notificaciones[k].job_id, obtener_recurso(notificaciones[k].recurso), notificaciones[k].cantidad);
-                        enviar_fd(notificaciones[k].socket, respuesta);
+                        snprintf(respuesta, sizeof(respuesta), "GRANTED %d\n", 
+                                 notificaciones[k].job_id);
                     }
                     
                     cerrar_conexion(state.epoll_fd, info);

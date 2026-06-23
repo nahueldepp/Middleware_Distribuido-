@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-
+#include <signal.h>
 #include "resource_manager.h"
 #include "server.h"
 
@@ -10,6 +10,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Uso: %s <puerto_publico> <puerto_local> <cpu> <mem> <gpu>\n", argv[0]);
         return 1;
     }
+    signal(SIGPIPE, SIG_IGN);
 
     // Parsea los argumentos de los puertos y capacidades de hardware.
     int puerto_publico = atoi(argv[1]);
