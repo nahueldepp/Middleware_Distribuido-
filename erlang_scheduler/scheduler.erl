@@ -113,7 +113,7 @@ lanzar_simulador(forzado, NodosOrdenados) ->
 bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes) ->
     receive
         %% Llega un pedido del simulador.
-        %% RecursosPedidos debe ser [{IP, Recurso, Cantidad}, ...], es decir, el simulador ya decidió a qué nodo le pide cada cosa (usando NodosOrdenados para saber qué hay disponible en la red).
+        %% RecursosPedidos debe ser [{IP, Puerto, Recurso, Cantidad}, ...], es decir, el simulador ya decidió a qué nodo le pide cada cosa (usando NodosOrdenados para saber qué hay disponible en la red).
         {pedido, PidSimulador, RecursosPedidos} ->
             IdJob = erlang:unique_integer([positive]),
 
