@@ -75,7 +75,7 @@ Esto garantiza una jerarquía global única incluso cuando varios nodos comparte
 Cuando varios recursos pertenecen al mismo nodo, se aplica la siguiente prioridad fija:
 
 ```text
-cpu → mem → gpu
+cpu → gpu → mem
 ```
 
 De esta forma todos los procesos solicitan recursos siguiendo exactamente el mismo orden, eliminando la posibilidad de espera circular dentro del modelo implementado.
