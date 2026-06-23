@@ -148,6 +148,10 @@ bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes) ->
                         MensajeC
                     ]),
                     bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes);
+                ["OK" | _] ->
+                    %% La liberación se procesó bien. No hay nada que avisarle al simulador. Sólo lo registramos para que el log quede limpio.
+                    log_evento("LIBERACIÓN CONFIRMADA por C (OK)"),
+                    bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes);
                 [Accion, IdStr | _Resto] ->
                     IdJob = list_to_integer(IdStr),
                     %% Chequeamos primero si el IdJob tiene una consulta de status pendiente. La mostramos/logueamos pero no disparamos el timer de liberación ni avisamos al simulador.
@@ -272,7 +276,10 @@ bucle_gerente(Socket, NodosOrdenados, JobsActivos, ConsultasPendientes) ->
         %% Desconexión
         conexion_cerrada ->
             log_evento("CRITICO: Se perdió la conexión con el agente C. Apagando planificador."),
-            io:format("Scheduler apagado.~n")
+            io:format("Scheduler apagado.~n");
+        {tcp_error, Razon} ->
+            log_evento(io_lib:format("CRITICO: error de socket con el agente C: ~p. Apagando planificador.", [Razon])),
+            io:format("Scheduler: error de conexión con C (~p). Apagando.~n", [Razon])
     end.
 
 %% Función para consultar el estado de un job.
