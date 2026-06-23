@@ -20,7 +20,7 @@ static void sumar_recurso(ResourceManager * rm, unsigned int rec, unsigned int c
 }
 
 // funcion hash compuesta
-static unsigned int funcion_hash(unsigned int id, int socket, unsigned int capacidad) { return (id + socket) % capacidad; }
+unsigned int funcion_hash(unsigned int id, int socket, unsigned int capacidad) { return (id + socket) % capacidad; }
 
 // hash_init: dado un entero tamaño, reserva memoria para la tabla hash y devuelve el puntero a la tabla
 static struct hash_activos * hash_init(unsigned int t){

@@ -44,6 +44,8 @@ typedef struct {
     struct hash_activos * activos;
 } ResourceManager;
 
+unsigned int funcion_hash(unsigned int id, int socket, unsigned int capacidad);
+
 int resources_init(ResourceManager * rm, unsigned int cant_cpu, unsigned int cant_gpu, unsigned int cant_mem, unsigned int tam_activos);
 
 int handler_reserve(ResourceManager * rm, int socket, char* string_id, char* string_recurso, char* string_cantidad);

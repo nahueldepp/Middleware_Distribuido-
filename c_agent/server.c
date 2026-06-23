@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <time.h>
 
+#include "resource_manager.h"
 #include "server.h"
 
 #define MAX_NODOS 32
@@ -505,8 +506,6 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                             
                             int res = handler_reserve(state->rm, info->fd, str_id, recurso, str_cant);
                             if (res != 1) { 
-                                // Si da 0 se encoló (QUEUED), pero para un JOB_REQUEST compuesto, 
-                                // si no se concede todo en el momento, lo consideramos fallo para hacer rollback
                                 todos_concedidos = 0;
                             }
                         } else {
@@ -528,7 +527,6 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                                 memset(&rem_addr, 0, sizeof(rem_addr));
                                 rem_addr.sin_family = AF_INET;
                                 rem_addr.sin_port = htons(puerto_remoto);
-                                
                                 rem_addr.sin_addr.s_addr = inet_addr(ip_remota); 
                                 
                                 if (connect(rem_fd, (struct sockaddr*)&rem_addr, sizeof(rem_addr)) == 0) {
@@ -555,6 +553,10 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                                 todos_concedidos = 0;
                             }
                         }
+                    } else {
+                        // PARCHE DE SEGURIDAD: Si el formato del string falla (ej. le falta el puerto)
+                        // forzamos a que el Job se deniegue inmediatamente.
+                        todos_concedidos = 0;
                     }
                 }
                 token = strtok(NULL, " ");
@@ -606,14 +608,31 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
             char str_id[32];
             snprintf(str_id, sizeof(str_id), "%d", req_id);
             
+            // 1. Buscamos el job en nuestra tabla hash antes de borrarlo para saber qué recursos tenía asignados
+            unsigned int indice_hash = funcion_hash(req_id, info->fd, state->rm->activos->capacidad);
+            struct job_activo * actual_job = state->rm->activos->tabla[indice_hash];
+            
+            unsigned int cpu_a_liberar = 0;
+            unsigned int gpu_a_liberar = 0;
+            unsigned int mem_a_liberar = 0;
+            
+            while (actual_job != NULL) {
+                if (actual_job->id == (unsigned int)req_id) {
+                    cpu_a_liberar = actual_job->cpu_asignado;
+                    gpu_a_liberar = actual_job->gpu_asignado;
+                    mem_a_liberar = actual_job->mem_asignado;
+                    break;
+                }
+                actual_job = actual_job->siguiente;
+            }
+
             Notificacion notificaciones[MAX_NOTIFICACIONES];
             int cant_notificaciones = 0;
             
-            // Liberamos dinámicamente usando la nueva función que creamos para resource_manager.c
+            // 2. Liberamos localmente con "todo" (esto limpia las estructuras hash nativas)
             int res = handler_release(state->rm, info->fd, str_id, "todo", "0", notificaciones, &cant_notificaciones, MAX_NOTIFICACIONES);
             
             if (res == 0) {
-                // Notificamos localmente a Erlang si se destrabaron otros trabajos en nuestras colas
                 for(int k = 0; k < cant_notificaciones; k++){
                     char respuesta[128];
                     snprintf(respuesta, sizeof(respuesta), "GRANTED job_id:<%d> resource:<%s> amount:<%d>\n", 
@@ -622,7 +641,13 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                 }
             }
             
+            // 3. Replicamos a los vecinos usando estrictamente el protocolo estándar de la cátedra
             for (int i = 0; i < cantidad_nodos; i++) {
+                // EVITAMOS CONECTARNOS A NOSOTROS MISMOS
+                if (tabla_nodos[i].puerto == state->puerto_publico) {
+                    continue;
+                }
+
                 int rem_fd = socket(AF_INET, SOCK_STREAM, 0);
                 struct sockaddr_in rem_addr;
                 memset(&rem_addr, 0, sizeof(rem_addr));
@@ -632,8 +657,21 @@ static void manejar_linea_completa(ServerState* state, FdInfo* info, const char*
                 
                 if (connect(rem_fd, (struct sockaddr*)&rem_addr, sizeof(rem_addr)) == 0) {
                     char cmd_release_vecino[256];
-                    snprintf(cmd_release_vecino, sizeof(cmd_release_vecino), "RELEASE %d todo 0\n", req_id); 
-                    send(rem_fd, cmd_release_vecino, strlen(cmd_release_vecino), 0);
+                    
+                    // Solo enviamos si el Job remitió recursos compuestos al vecino en cuestión
+                    // Si el vecino es el dueño del hardware, procesará el string estándar limpio
+                    if (cpu_a_liberar > 0 && strcmp(tabla_nodos[i].recursos, "cpu") == 0) {
+                        snprintf(cmd_release_vecino, sizeof(cmd_release_vecino), "RELEASE %d cpu %u\n", req_id, cpu_a_liberar);
+                        send(rem_fd, cmd_release_vecino, strlen(cmd_release_vecino), 0);
+                    }
+                    if (gpu_a_liberar > 0 && strstr(tabla_nodos[i].recursos, "gpu") != NULL) {
+                        snprintf(cmd_release_vecino, sizeof(cmd_release_vecino), "RELEASE %d gpu %u\n", req_id, gpu_a_liberar);
+                        send(rem_fd, cmd_release_vecino, strlen(cmd_release_vecino), 0);
+                    }
+                    if (mem_a_liberar > 0 && strstr(tabla_nodos[i].recursos, "mem") != NULL) {
+                        snprintf(cmd_release_vecino, sizeof(cmd_release_vecino), "RELEASE %d mem %u\n", req_id, mem_a_liberar);
+                        send(rem_fd, cmd_release_vecino, strlen(cmd_release_vecino), 0);
+                    }
                     close(rem_fd);
                 } else {
                     close(rem_fd);
