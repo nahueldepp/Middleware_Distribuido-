@@ -46,8 +46,8 @@ pedidos_para_nodo({IP, Puerto, Recursos}) ->
         [] ->
             [];
         _ ->
-            CantidadRecursos = rand:uniform(length(Recursos)),
-            RecursosElegidos = elegir_n_al_azar(CantidadRecursos, Recursos),
+            CantidadRecursos = rand:uniform(length(Disponibles)),
+            RecursosElegidos = elegir_n_al_azar(CantidadRecursos, Disponibles),
             [
                 pedido_para_recurso(IP, Puerto, Recurso, Total)
              || {Recurso, Total} <- RecursosElegidos
