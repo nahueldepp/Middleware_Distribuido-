@@ -1,6 +1,6 @@
 -module(scheduler).
 -export([iniciar/1, iniciar_normal/1, log_evento/1, parsear_nodos/1, prioridad_recurso/1]).
--export([armar_peticion/2, consultar_status/2]).
+-export([armar_peticion/2, consultar_status/2, iniciar_deadlock/2]).
 -export([bucle_gerente/4]).
 -define(ESPERA_REINTENTO_MS, 1000).
 -define(MAX_REINTENTOS_DENIED, 3).
@@ -38,6 +38,11 @@ iniciar(PuertoC) ->
 %% armado de deadlock.
 iniciar_normal(PuertoC) ->
     arrancar(PuertoC, normal).
+
+%% Arranque en modo deadlock para dos planificadores independientes.
+%% Es un caso de deadlock más fuerte que el iniciar forzado.
+iniciar_deadlock(PuertoC, Lado) ->
+    arrancar(PuertoC, {deadlock_lado, Lado}).
 
 %% Función común de arranque. El parámetro Modo (forzado | normal) decide
 %% qué modo del simulador se lanza una vez conectados y descubiertos los
@@ -81,6 +86,17 @@ arrancar(PuertoC, Modo) ->
 %% - En modo 'forzado': si hay 2+ nodos arma el escenario del §6; si hay
 %%   uno solo, cae a carga random (no se puede forzar con un nodo); si no
 %%   hay ninguno, no arranca el simulador.
+%% - En modo deadlock, se lanzan dos planificadores independientes para que se
+%%   vea la prevención ante solapamiento.
+lanzar_simulador({deadlock_lado, Lado}, NodosOrdenados) ->
+    case NodosOrdenados of
+        [{IpA, PuertoA, _}, {IpB, PuertoB, _} | _] ->
+            io:format("Scheduler: lanzando lado ~p del escenario cruzado.~n", [Lado]),
+            spawn(simulador, forzar_deadlock_lado,
+                  [self(), Lado, {{IpA, PuertoA}, {IpB, PuertoB}}]);
+        _ ->
+            io:format("Scheduler: necesito 2 nodos para el escenario. No arranco.~n")
+    end;
 lanzar_simulador(normal, NodosOrdenados) ->
     case NodosOrdenados of
         [] ->
