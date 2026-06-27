@@ -173,13 +173,15 @@ int handler_release(ResourceManager * rm, int socket, char* string_id, char* str
     } else {
         anterior_nodo = job;
         actual = job->siguiente;
-        while (actual != NULL && (actual->id != id || actual->socket != socket)){
+        while (actual != NULL && actual->id != id){
             anterior_nodo = actual;
             actual = actual->siguiente;
         }
     }
 
     if (actual == NULL) { printf("Error: JOB inexistente\n"); return -1; }
+
+    actual->socket = socket;
 
     // Variables locales para acumular qué devolvemos al pozo general
     unsigned int cpu_devuelto = 0;
